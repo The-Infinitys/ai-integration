@@ -4,14 +4,17 @@ use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value; // For handling JSON objects for tool arguments and results
+use serde_json::Value;
 use std::error::Error;
 use std::io::{self, Write};
-use tokio::io::{AsyncBufReadExt, BufReader}; // For streaming
-use tokio_util::io::StreamReader; // To convert reqwest stream to tokio's AsyncRead
-use chrono::{Local, DateTime}; // For current date and time
-use tokio::fs; // For async file system operations
-use std::path::Path; // For path manipulation
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio_util::io::StreamReader;
+use bytes::Bytes;
+use futures::StreamExt;
+use chrono::{Local, DateTime};
+use tokio::fs;
+use std::path::Path;
+use html2md::parse_html; // html2md クレートをインポート
 
 /// `AIAgentApi`トレイトは、AIエージェントとやり取りするための基本的なインターフェースを定義します。
 #[async_trait]
@@ -31,30 +34,27 @@ pub trait AIAgentApi {
 struct OllamaChatRequest {
     model: String,
     messages: Vec<Message>,
-    #[serde(skip_serializing_if = "Option::is_none")] // toolsがない場合はシリアライズしない
+    #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<Tool>>,
     stream: bool,
 }
 
 // チャットメッセージの構造体（ロールとコンテンツを含む）
 #[derive(Serialize, Deserialize, Clone)]
-#[serde(untagged)] // JSONの構造に応じてデシリアライズする
+#[serde(untagged)]
 enum Message {
     UserAssistantSystem {
         role: String,
         content: String,
     },
-    // AIがツールを呼び出すときに使用するメッセージタイプ
     ToolCall {
         role: String,
-        #[serde(default)]
         tool_calls: Vec<ToolCall>,
     },
-    // ツールの実行結果をAIにフィードバックするときに使用するメッセージタイプ
     ToolResult {
         role: String,
-        tool_call_id: String, // どのツール呼び出しに対応するか
-        content: String,      // ツールの実行結果
+        tool_call_id: String,
+        content: String,
     },
 }
 
@@ -62,7 +62,7 @@ enum Message {
 #[derive(Serialize, Deserialize, Clone)]
 struct Tool {
     #[serde(rename = "type")]
-    tool_type: String, // "function"
+    tool_type: String,
     function: Function,
 }
 
@@ -71,15 +71,15 @@ struct Tool {
 struct Function {
     name: String,
     description: String,
-    parameters: Value, // JSON Schema object
+    parameters: Value,
 }
 
 // AIがツールを呼び出すことを決定したときに返される構造体
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct ToolCall {
-    id: String, // ツール呼び出しの一意のID
+    id: String,
     #[serde(rename = "type")]
-    tool_type: String, // "function"
+    tool_type: String,
     function: ToolFunctionCall,
 }
 
@@ -87,7 +87,7 @@ struct ToolCall {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct ToolFunctionCall {
     name: String,
-    arguments: Value, // JSON object of arguments
+    arguments: Value,
 }
 
 // Ollama streaming response struct
@@ -101,10 +101,8 @@ struct OllamaStreamResponse {
 // ストリーミングレスポンス内の選択肢の内部構造体
 #[derive(Deserialize)]
 struct StreamChoice {
-    delta: StreamDelta, // 差分コンテンツとツール呼び出しを含む
-    #[allow(dead_code)]
+    delta: StreamDelta,
     index: Option<u32>,
-    #[allow(dead_code)]
     finish_reason: Option<String>,
 }
 
@@ -115,11 +113,7 @@ struct StreamDelta {
     content: String,
     #[serde(default)]
     tool_calls: Vec<ToolCall>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    role: String, // "assistant"など、deltaのロール
 }
-
 
 /// `OllamaAIAgentApi`は`AIAgentApi`トレイトのOllama実装です。
 /// OllamaサーバーとHTTPで通信し、AIの応答を取得します。
@@ -127,8 +121,8 @@ pub struct OllamaAIAgentApi {
     client: Client,
     ollama_url: String,
     model_name: String,
-    chat_history: Vec<Message>, // 会話履歴を保持
-    available_tools: Vec<Tool>, // AIに提供する利用可能なツール
+    chat_history: Vec<Message>,
+    available_tools: Vec<Tool>,
 }
 
 impl OllamaAIAgentApi {
@@ -208,27 +202,50 @@ impl OllamaAIAgentApi {
         file_info
     }
 
-    // 新しいヘルパー関数: ダミーのWeb検索を実行
-    async fn execute_web_search(&self, query: &str, engine: Option<&str>) -> String {
-        let used_engine = engine.unwrap_or("google");
-        println!("\n[AI (ツール): Web検索を実行中... クエリ: '{}', エンジン: '{}']", query, used_engine);
+    // 変更: 実際のWeb検索を実行し、HTMLをMarkdownにパースして返す
+    async fn execute_web_search(&self, query: &str, _engine: Option<&str>) -> Result<String, Box<dyn Error>> {
+        // 注: `engine` 引数は、Googleに限定するため現時点では使用しません。
+        // 別の検索エンジンを使用する場合は、`_engine` を活用してURLを構築する必要があります。
+        let search_url = format!("https://www.google.com/search?q={}", urlencoding::encode(query));
+        
+        println!("\n[AI (ツール): Google検索を実行中... クエリ: '{}']", query);
+        println!("[AI (ツール): URL: {}]", search_url);
         io::stdout().flush().unwrap_or_default();
 
-        // ここに実際のWeb検索ロジック（例: 外部API呼び出し）が入ります。
-        // 今はダミーの結果を返します。
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await; // 検索の遅延をシミュレート
+        let response = self.client.get(&search_url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+            .send()
+            .await?;
 
-        format!(
-            "検索結果 (エンジン: {}): 「{}」\n\
-            1. Rustプログラミング入門 - URL: https://example.com/rust-intro\n\
-            2. 最新AI技術の動向 - URL: https://example.com/latest-ai\n\
-            3. 香川県丸亀市の観光情報 - URL: https://example.com/marugame-tourism\n\
-            上記のWeb検索結果はシミュレーションです。",
-            used_engine, query
-        )
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(format!("Web検索リクエストが失敗しました。ステータス: {}, ボディ: {}", status, text).into());
+        }
+
+        let html_content = response.text().await?;
+        
+        // HTMLをMarkdownに変換
+        // 注: GoogleのHTML構造は複雑で頻繁に変わるため、`html2md`が常に最適なMarkdownを生成するとは限りません。
+        // 大量のノイズが含まれる可能性があります。
+        let markdown_content = parse_html(&html_content);
+
+        let truncated_markdown = if markdown_content.len() > 2000 {
+            format!("{}\n...(結果は長すぎるため一部省略されました)", &markdown_content[..2000])
+        } else {
+            markdown_content
+        };
+
+        println!("[AI (ツール): 検索結果のHTMLをMarkdownに変換しました。]");
+        io::stdout().flush().unwrap_or_default();
+        
+        Ok(format!(
+            "Web検索結果 (Google): 「{}」\n```markdown\n{}\n```\n",
+            query, truncated_markdown
+        ))
     }
 
-    // ヘルパー関数: ストリーム応答からテキストコンテンツを抽出して表示
+    // ヘルパー関数: ストリーム応答からテキストコンテンツとツール呼び出しを抽出して表示
     async fn process_stream_and_get_content(
         &self,
         response: reqwest::Response,
@@ -248,16 +265,16 @@ impl OllamaAIAgentApi {
             buffer.clear();
             let bytes_read = reader.read_line(&mut buffer).await?;
             if bytes_read == 0 {
-                break; // End of stream
+                break;
             }
 
             let line_content = buffer.trim();
             if line_content.is_empty() {
-                continue; // Skip empty lines
+                continue;
             }
 
             let json_str = if line_content.starts_with("data: ") {
-                &line_content[6..] // Skip "data: "
+                &line_content[6..]
             } else {
                 line_content
             };
@@ -270,15 +287,12 @@ impl OllamaAIAgentApi {
                 Ok(stream_response) => {
                     if let Some(choice) = stream_response.choices.into_iter().next() {
                         if !choice.delta.content.is_empty() {
-                            // AIからのテキストコンテンツを表示
                             print!("{}", choice.delta.content);
                             io::stdout().flush()?;
                             full_response_content.push_str(&choice.delta.content);
                         }
                         
-                        // ツール呼び出しがある場合、これをキャプチャ
                         if !choice.delta.tool_calls.is_empty() {
-                            // 現時点では最初のツール呼び出しのみを処理（Ollamaのdeltaでtool_callsが複数来ることは稀）
                             if let Some(tc) = choice.delta.tool_calls.into_iter().next() {
                                 assistant_tool_call = Some(tc);
                             }
@@ -293,8 +307,6 @@ impl OllamaAIAgentApi {
                         "OllamaストリームからのJSON行のパースに失敗しました: {:?}, 行: '{}'",
                         e, line_content
                     );
-                    // 不完全なJSON行をスキップするが、エラーを報告
-                    // ストリームが正しく終了しない場合の最後の行などで発生しやすい
                     continue;
                 }
             }
@@ -314,9 +326,9 @@ impl Default for OllamaAIAgentApi {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let model_line = stdout
                 .lines()
-                .nth(1) // Get the second line (after the header)
-                .and_then(|line| line.split_whitespace().next()) // Get the first word (model name)
-                .unwrap_or("llama2"); // Default to llama2 if unable to get
+                .nth(1)
+                .and_then(|line| line.split_whitespace().next())
+                .unwrap_or("llama2");
             model_line.to_string()
         }
         .to_string();
@@ -333,7 +345,6 @@ impl AIAgentApi for OllamaAIAgentApi {
         let file_status = Self::get_file_status(&current_dir).await;
 
         // システムメッセージに現在のコンテキストを追加
-        // このメッセージは、各リクエストのたびに最新の情報を提供します。
         self.chat_history.push(Message::UserAssistantSystem {
             role: "system".to_string(),
             content: format!(
@@ -349,15 +360,18 @@ impl AIAgentApi for OllamaAIAgentApi {
         });
 
         // ===== 1回目のOllama API呼び出し: AIがツール呼び出しを決定するかどうか =====
-        println!("[AI (システム): AIが応答を生成中... (ツール呼び出しの可能性あり)]");
+        println!("\n[AI (システム): AIが応答を生成中... (ツール呼び出しの可能性あり)]");
         io::stdout().flush()?;
 
         let request_body_first = OllamaChatRequest {
             model: self.model_name.clone(),
             messages: self.chat_history.clone(),
-            tools: Some(self.available_tools.clone()), // 利用可能なツールをAIに教える
+            tools: Some(self.available_tools.clone()),
             stream: true,
         };
+
+        println!("DEBUG: Request Body (1st call):\n{}", serde_json::to_string_pretty(&request_body_first)?);
+        io::stdout().flush()?;
 
         let request_url = format!("{}/v1/chat/completions", self.ollama_url);
 
@@ -374,6 +388,7 @@ impl AIAgentApi for OllamaAIAgentApi {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Failed to get response body".to_string());
+            eprintln!("DEBUG: Failed Request Body (1st call):\n{}", serde_json::to_string_pretty(&request_body_first).unwrap_or_default());
             return Err(format!("Ollama APIリクエスト (1回目) が失敗しました。ステータス: {}, ボディ: {}. Ollamaサーバーが {} で実行されており、モデル '{}' が利用可能であることを確認してください。", status, text, self.ollama_url, self.model_name).into());
         }
 
@@ -388,19 +403,20 @@ impl AIAgentApi for OllamaAIAgentApi {
             // アシスタントのツール呼び出しメッセージを履歴に追加
             self.chat_history.push(Message::ToolCall {
                 role: "assistant".to_string(),
-                tool_calls: vec![tool_call.clone()], // クローンして履歴に残す
+                tool_calls: vec![tool_call.clone()],
             });
 
             let tool_result: String;
             match tool_call.function.name.as_str() {
                 "web_search" => {
-                    // `query` 引数を抽出
                     let query = tool_call.function.arguments["query"]
                         .as_str()
                         .unwrap_or_default();
                     let engine = tool_call.function.arguments["engine"]
-                        .as_str(); // `engine`はオプション
-                    tool_result = self.execute_web_search(query, engine).await;
+                        .as_str();
+                    
+                    // execute_web_searchがResultを返すようになったため、?演算子でエラーを伝播
+                    tool_result = self.execute_web_search(query, engine).await?;
                 }
                 _ => {
                     tool_result = format!("不明なツール: {}", tool_call.function.name);
@@ -413,7 +429,7 @@ impl AIAgentApi for OllamaAIAgentApi {
             // ツールの実行結果を履歴に追加
             self.chat_history.push(Message::ToolResult {
                 role: "tool".to_string(),
-                tool_call_id: tool_call.id.clone(), // どのツール呼び出しに対応するか
+                tool_call_id: tool_call.id.clone(),
                 content: tool_result,
             });
 
@@ -423,10 +439,13 @@ impl AIAgentApi for OllamaAIAgentApi {
 
             let request_body_second = OllamaChatRequest {
                 model: self.model_name.clone(),
-                messages: self.chat_history.clone(), // ツールの結果も含む
-                tools: Some(self.available_tools.clone()), // 再度ツール定義を含める
+                messages: self.chat_history.clone(),
+                tools: Some(self.available_tools.clone()),
                 stream: true,
             };
+
+            println!("DEBUG: Request Body (2nd call):\n{}", serde_json::to_string_pretty(&request_body_second)?);
+            io::stdout().flush()?;
 
             let response_second = self
                 .client
@@ -441,21 +460,20 @@ impl AIAgentApi for OllamaAIAgentApi {
                     .text()
                     .await
                     .unwrap_or_else(|_| "Failed to get response body".to_string());
+                eprintln!("DEBUG: Failed Request Body (2nd call):\n{}", serde_json::to_string_pretty(&request_body_second).unwrap_or_default());
                 return Err(format!("Ollama APIリクエスト (2回目) が失敗しました。ステータス: {}, ボディ: {}. Ollamaサーバーが {} で実行されており、モデル '{}' が利用可能であることを確認してください。", status, text, self.ollama_url, self.model_name).into());
             }
 
             let (final_assistant_response, _) =
                 self.process_stream_and_get_content(response_second).await?;
-            assistant_response_content = final_assistant_response; // 最終応答を更新
+            assistant_response_content = final_assistant_response;
 
         } else {
             // ツール呼び出しがなかった場合、1回目の応答が最終応答となる
-            // 何もしない（assistant_response_contentは既に設定されている）
         }
 
-        println!(); // 最終応答の後に改行
+        println!();
 
-        // アシスタントの最終応答をチャット履歴に追加
         self.chat_history.push(Message::UserAssistantSystem {
             role: "assistant".to_string(),
             content: assistant_response_content.clone(),
