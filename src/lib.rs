@@ -1,6 +1,7 @@
 // src/lib.rs
 
 pub mod modules;
+pub mod utils;
 
 // modules::chat::* ではなく、modules::chat::{cli, tui} のように直接参照
 use modules::chat::{
@@ -20,14 +21,9 @@ impl ChatApp {
     /// 新しい`ChatApp`のインスタンスを作成します。
     /// デフォルトではCLIインターフェースとOllama APIを使用します。
     pub fn new() -> Self {
-        // デフォルトのOllama設定
-        let ollama_url =
-            std::env::var("OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
-        let ollama_model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama2".to_string()); // デフォルトモデル
-
         ChatApp {
             chat_interface: Box::new(CommandLineChat),
-            ai_agent_api: Box::new(OllamaAIAgentApi::new(ollama_url, ollama_model)),
+            ai_agent_api: Box::new(OllamaAIAgentApi::default()),
         }
     }
 
