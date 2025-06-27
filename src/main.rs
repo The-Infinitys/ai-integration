@@ -1,9 +1,9 @@
 // src/main.rs
 use regex::Regex;
 use std::collections::HashMap;
-use std::fmt::{self, Display};
 use std::env; // コマンドライン引数を読み込むために必要
 use std::error::Error;
+use std::fmt::{self, Display};
 use std::fs;
 use std::pin::Pin;
 use tokio;
@@ -34,18 +34,19 @@ impl Error for CustomError {}
 // --- 1. データ構造の定義 ---
 
 // スクリプトが最終的に持つ値
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum Value {
     String(String),
-    Null,
+    #[allow(dead_code)]
+    None,
 }
 
 // Displayトレイトを実装して、Printで簡単に出力できるようにする
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Value::None => write!(f, "None"),
             Value::String(s) => write!(f, "{}", s),
-            Value::Null => write!(f, "null"),
         }
     }
 }
@@ -163,59 +164,75 @@ impl Executor {
     async fn evaluate(&mut self, expr: &Expression) -> Result<Value, Box<dyn Error>> {
         match expr {
             Expression::LiteralString(s) => Ok(Value::String(s.clone())),
-            Expression::Variable(name) => self
-                .variables
-                .get(name)
-                .cloned()
-                .ok_or_else(|| Box::new(CustomError(format!("変数 '{}' が見つかりません", name))) as Box<dyn Error>),
+            Expression::Variable(name) => self.variables.get(name).cloned().ok_or_else(|| {
+                Box::new(CustomError(format!("変数 '{}' が見つかりません", name))) as Box<dyn Error>
+            }),
             Expression::ReadFile(path_expr) => {
                 // ファイルパスを表す式をまず評価する
                 let path_val = Box::pin(self.evaluate(path_expr)).await?;
                 if let Value::String(path) = path_val {
                     // std::io::Error は Error トレイトを実装しているので .into() で Box<dyn Error> に変換できる
                     // e.into() は型推論があいまいになる可能性があるため、明示的にBox化します
-                    let content = fs::read_to_string(&path).map_err(|e| Box::new(e) as Box<dyn Error>)?;
+                    let content =
+                        fs::read_to_string(&path).map_err(|e| Box::new(e) as Box<dyn Error>)?;
                     Ok(Value::String(content))
                 } else {
-                    Err(Box::new(CustomError("ファイルパスは文字列である必要があります".to_string())) as Box<dyn Error>)
+                    Err(Box::new(CustomError(
+                        "ファイルパスは文字列である必要があります".to_string(),
+                    )) as Box<dyn Error>)
                 }
             }
             Expression::GenerateContent(provider_expr, prompt_expr) => {
-                let provider_name = match Box::pin(self.evaluate(provider_expr)).await? {
+                let provider_name_str = match Box::pin(self.evaluate(provider_expr)).await? {
                     Value::String(s) => s.to_lowercase(),
-                    _ => return Err(Box::new(CustomError("AIプロバイダー名は文字列である必要があります".to_string())) as Box<dyn Error>),
+                    _ => {
+                        return Err(Box::new(CustomError(
+                            "AIプロバイダー名は文字列である必要があります".to_string(),
+                        )) as Box<dyn Error>);
+                    }
                 };
                 let prompt_text = match Box::pin(self.evaluate(prompt_expr)).await? {
                     Value::String(s) => s,
-                    _ => return Err(Box::new(CustomError("プロンプトは文字列である必要があります".to_string())) as Box<dyn Error>),
+                    _ => {
+                        return Err(Box::new(CustomError(
+                            "プロンプトは文字列である必要があります".to_string(),
+                        )) as Box<dyn Error>);
+                    }
                 };
 
-                // プロバイダー名に基づいて適切なジェネレータを選択
-                let generator: &dyn AIGenerator = match provider_name.as_str() {
-                    "openai" => {
+                // 文字列からAIProvider enumに変換
+                let provider_enum = match provider_name_str.as_str() {
+                    "openai" => ai::AIProvider::OpenAI,
+                    "ollama" => ai::AIProvider::Ollama,
+                    "gemini" => ai::AIProvider::Gemini,
+                    _ => {
+                        return Err(Box::new(CustomError(format!(
+                            "不明なAIプロバイダー: {}",
+                            provider_name_str
+                        ))) as Box<dyn Error>);
+                    }
+                };
+
+                // AIProvider enumに基づいて適切なジェネレータを選択
+                let generator: &dyn AIGenerator = match provider_enum {
+                    ai::AIProvider::OpenAI => {
                         if self.openai_generator.is_none() {
-                            // OpenAIクライアントを必要に応じて初期化 (configを渡す)
-                            // OpenAIChat::new は Box<dyn Error> を返すので、そのまま ? で伝播
                             self.openai_generator = Some(Box::new(OpenAIChat::new(&self.config)?));
                         }
                         self.openai_generator.as_ref().unwrap().as_ref()
                     }
-                    "ollama" => {
+                    ai::AIProvider::Ollama => {
                         if self.ollama_generator.is_none() {
-                            // Ollamaクライアントを必要に応じて初期化 (configを渡す)
                             self.ollama_generator = Some(Box::new(OllamaChat::new(&self.config)));
                         }
                         self.ollama_generator.as_ref().unwrap().as_ref()
                     }
-                    "gemini" => {
+                    ai::AIProvider::Gemini => {
                         if self.gemini_generator.is_none() {
-                            // Geminiクライアントを必要に応じて初期化 (configを渡す)
-                            // GeminiChat::new は Box<dyn Error> を返すので、そのまま ? で伝播
                             self.gemini_generator = Some(Box::new(GeminiChat::new(&self.config)?));
                         }
                         self.gemini_generator.as_ref().unwrap().as_ref()
                     }
-                    _ => return Err(Box::new(CustomError(format!("不明なAIプロバイダー: {}", provider_name))) as Box<dyn Error>),
                 };
 
                 let generated_text = generator.generate_content(&prompt_text).await?;
@@ -227,11 +244,13 @@ impl Executor {
     async fn run(&mut self, statements: &[Statement]) -> Result<(), Box<dyn Error>> {
         for stmt in statements {
             match stmt {
-                Statement::Let(name, expr) => { // evaluate のエラー型が Box<dyn Error> になったので map_err は不要
+                Statement::Let(name, expr) => {
+                    // evaluate のエラー型が Box<dyn Error> になったので map_err は不要
                     let value = self.evaluate(expr).await?;
                     self.variables.insert(name.clone(), value);
                 }
-                Statement::Print(expr) => { // evaluate のエラー型が Box<dyn Error> になったので map_err は不要
+                Statement::Print(expr) => {
+                    // evaluate のエラー型が Box<dyn Error> になったので map_err は不要
                     let value = self.evaluate(expr).await?;
                     println!("{}", value);
                 }
@@ -254,24 +273,34 @@ async fn main() {
             help::display_help();
         }
         Some("prompt") => {
-            if let Some(provider_name) = args.get(2) {
-                let generator: Pin<Box<dyn AIGenerator>> = match provider_name.as_str() {
-                    "openai" => Box::pin(OpenAIChat::new(&config).expect("OpenAIクライアントの初期化に失敗しました")),
-                    "ollama" => Box::pin(OllamaChat::new(&config)),
-                    "gemini" => Box::pin(GeminiChat::new(&config).expect("Geminiクライアントの初期化に失敗しました")),
-                    _ => {
-                        // エラーメッセージは Box<dyn Error> を返すので、それを Box::pin で Pin<Box<dyn Error>> に変換
-                        // ただし、ここでは eprintln! で直接出力して return しているため、Result に変換する必要はない
-                        // そのため、このブロックは変更なし
-                        // (もし Result を返すなら Box::pin(Box::<dyn Error>::from(...)) となる)
-                        eprintln!(
-                            "エラー: 不明なAIプロバイダー '{}' です。'openai', 'ollama', 'gemini' のいずれかを指定してください。",
-                            provider_name
-                        );
-                        return;
+            if let Some(provider_name_str) = args.get(2) {
+                let generator: Pin<Box<dyn AIGenerator>> = {
+                    let provider_enum = match provider_name_str.as_str() {
+                        "openai" => ai::AIProvider::OpenAI,
+                        "ollama" => ai::AIProvider::Ollama,
+                        "gemini" => ai::AIProvider::Gemini,
+                        _ => {
+                            eprintln!(
+                                "エラー: 不明なAIプロバイダー '{}' です。'openai', 'ollama', 'gemini' のいずれかを指定してください。",
+                                provider_name_str
+                            );
+                            return;
+                        }
+                    };
+
+                    match provider_enum {
+                        ai::AIProvider::OpenAI => Box::pin(
+                            OpenAIChat::new(&config)
+                                .expect("OpenAIクライアントの初期化に失敗しました"),
+                        ),
+                        ai::AIProvider::Ollama => Box::pin(OllamaChat::new(&config)),
+                        ai::AIProvider::Gemini => Box::pin(
+                            GeminiChat::new(&config)
+                                .expect("Geminiクライアントの初期化に失敗しました"),
+                        ),
                     }
                 };
-                if let Err(e) = prompt::start_chat_loop(generator).await { // generator は既に Pin<Box<dyn AIGenerator>> なので .into() は不要
+                if let Err(e) = prompt::start_chat_loop(generator).await {
                     eprintln!("チャットエラー: {}", e);
                 }
             } else {

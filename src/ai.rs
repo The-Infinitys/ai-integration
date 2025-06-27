@@ -1,19 +1,27 @@
 // src/ai.rs
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::error::Error;
+use std::fmt;
+use std::{error::Error};
 // use std::env; // 環境変数を読み込む必要がなくなったためコメントアウト
 use crate::config::Config; // Configモジュールをインポート
 
 /// AIプロバイダーの種類を定義する列挙型
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum AIProvider {
     OpenAI,
     Ollama,
     Gemini,
 }
-
+impl fmt::Display for AIProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OpenAI => write!(f, "OpenAI"),
+            Self::Ollama => write!(f, "Ollama"),
+            Self::Gemini => write!(f, "Gemini"),
+        }
+    }
+}
 /// AIモデルとの対話のための共通インターフェース
 #[async_trait]
 pub trait AIGenerator {
@@ -70,7 +78,7 @@ impl AIGenerator for OpenAIChat {
             message: Message,
         }
 
-        #[derive(Serialize,Deserialize)]
+        #[derive(Serialize, Deserialize)]
         struct APIResponse {
             choices: Vec<Choice>,
         }
@@ -158,7 +166,6 @@ impl AIGenerator for OllamaChat {
 /// Gemini APIクライアント
 pub struct GeminiChat {
     api_key: String,
-    model: String,
     base_url: String,
     client: reqwest::Client,
 }
@@ -180,7 +187,6 @@ impl GeminiChat {
         let client = reqwest::Client::new();
         Ok(Self {
             api_key: config.gemini_api_key.clone(),
-            model: config.gemini_model.clone(),
             base_url,
             client,
         })
