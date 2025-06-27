@@ -4,20 +4,21 @@ use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-// use serde_json::Value;
 use std::error::Error;
 use std::io::{self, Write};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::io::StreamReader;
-// use bytes::Bytes;
-// use futures::StreamExt;
-use crate::dprintln;
-use chrono::{DateTime, Local};
-use html2md::parse_html;
-use regex::Regex;
-use std::path::Path;
+use chrono::{Local, DateTime};
 use tokio::fs;
-use urlencoding; // urlencoding クレートをインポート
+use std::path::Path;
+// html2md と urlencoding は search.rs に移動したため、ここでは不要（もし他で使っていなければ）
+// use html2md::parse_html;
+// use urlencoding;
+use regex::Regex;
+use crate::dprintln; // src/lib.rs または src/main.rs で定義されたマクロをインポート
+
+// 新しいsearchサブモジュールを宣言
+pub mod search;
 
 /// `AIAgentApi`トレイトは、AIエージェントとやり取りするための基本的なインターフェースを定義します。
 #[async_trait]
@@ -58,8 +59,6 @@ struct OllamaStreamResponse {
 #[derive(Deserialize)]
 struct StreamChoice {
     delta: StreamDelta,
-    // index: Option<u32>,
-    // finish_reason: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -149,90 +148,7 @@ Web検索やURLへのアクセスが必要な場合は、以下の形式でツ�
         }
         file_info
     }
-
-    // 実際のWeb検索またはURLアクセスを実行し、HTMLをMarkdownにパースして返す
-    async fn execute_web_search(
-        &self,
-        query: Option<&str>,
-        url: Option<&str>,
-        engine: Option<&str>,
-    ) -> Result<String, Box<dyn Error>> {
-        let fetch_url;
-        let action_description: String;
-
-        if let Some(target_url) = url {
-            // URLが指定された場合、直接そのURLにアクセス
-            fetch_url = target_url.to_string();
-            action_description = format!("URLアクセス: '{}'", target_url);
-        } else if let Some(search_query) = query {
-            // クエリが指定された場合、Google検索を実行
-            let used_engine = engine.unwrap_or("google");
-            fetch_url = format!(
-                "https://www.google.com/search?q={}",
-                urlencoding::encode(search_query)
-            );
-            action_description = format!("{}検索: '{}'", used_engine, search_query);
-        } else {
-            return Err("web_searchツールには 'query' または 'url' のいずれかが必要です。".into());
-        }
-
-        dprintln!(
-            self.debug_mode,
-            "\n[AI (ツール): {} を実行中... URL: {}]",
-            action_description,
-            fetch_url
-        );
-        io::stdout().flush().unwrap_or_default();
-
-        let response = self.client.get(&fetch_url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-            .send()
-            .await
-            .map_err(|e| format!("Webリクエストの送信に失敗しました: {}. URL: {}", e, fetch_url))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            return Err(format!(
-                "Webリクエストが失敗しました。ステータス: {}, ボディ: {}. URL: {}",
-                status, text, fetch_url
-            )
-            .into());
-        }
-
-        let html_content = response.text().await.map_err(|e| {
-            format!(
-                "HTMLコンテンツの取得に失敗しました: {}. URL: {}",
-                e, fetch_url
-            )
-        })?;
-
-        // HTMLをMarkdownに変換
-        let markdown_content = parse_html(&html_content);
-
-        // トークン制限を考慮して結果を切り捨てる
-        let truncated_markdown = if markdown_content.len() > 4000 {
-            // 適切な長さに調整
-            format!(
-                "{}\n...(結果は長すぎるため一部省略されました)",
-                &markdown_content[..4000]
-            )
-        } else {
-            markdown_content
-        };
-
-        dprintln!(
-            self.debug_mode,
-            "[AI (ツール): 検索/アクセス結果のHTMLをMarkdownに変換しました。]"
-        );
-        io::stdout().flush().unwrap_or_default();
-
-        Ok(format!(
-            "{}結果:\n```markdown\n{}\n```\n",
-            action_description, truncated_markdown
-        ))
-    }
-
+    
     // ヘルパー関数: ストリーム応答からテキストコンテンツを抽出して表示し、ツール呼び出しを検出
     async fn process_stream_and_get_content(
         &self,
@@ -472,7 +388,8 @@ Web検索やURLへのアクセスが必要な場合は、以下の形式でツ�
                         }
 
                         if query.is_some() || url.is_some() {
-                            tool_result = self.execute_web_search(query, url, engine).await?;
+                            // searchモジュールのexecute_web_searchを呼び出す
+                            tool_result = search::execute_web_search(&self.client, self.debug_mode, query, url, engine).await?;
                         } else {
                             tool_result = "エラー: web_searchツールには 'query' または 'url' のいずれかが必要です。".to_string();
                         }
