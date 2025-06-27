@@ -1,7 +1,7 @@
 // src/modules/chat.rs
 
 // 各チャットインターフェースの実装ファイルをサブモジュールとして宣言
-pub mod cli;
+pub mod interface;
 
 use async_trait::async_trait;
 use std::error::Error;

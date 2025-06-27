@@ -3,7 +3,7 @@
 pub mod modules;
 
 // modules::chat::* ではなく、modules::chat::{cli, tui} のように直接参照
-use modules::chat::{Chat, cli::CommandLineChat};
+use modules::chat::{Chat, interface::cli::CommandLineChat};
 use std::{error::Error, fmt};
 
 /// `ChatApp`構造体はCLIチャットアプリケーション全体を管理します。

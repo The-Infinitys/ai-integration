@@ -1,6 +1,6 @@
 // src/modules/chat/cli.rs
 
-use super::Chat; // 親モジュールで定義されたChatトレイトをインポート
+use super::super::Chat; // 親モジュールで定義されたChatトレイトをインポート
 use async_trait::async_trait;
 use std::error::Error;
 use std::io::{self, Write};
