@@ -1,4 +1,4 @@
-fn main()->Result<(),std::error::Error>{
-    println!("{}","Hello, World");
-    Ok(());
+fn main() -> Result<(), std::io::Error> {
+    println!("{}", "Hello, World");
+    Ok(())
 }
