@@ -2,6 +2,7 @@
 
 // 各チャットインターフェースの実装ファイルをサブモジュールとして宣言
 pub mod interface;
+pub mod api;
 
 use async_trait::async_trait;
 use std::error::Error;
