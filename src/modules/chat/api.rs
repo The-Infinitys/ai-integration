@@ -5,24 +5,27 @@ use futures_util::TryStreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::io::{self, Write}; // For flushing stdout
-use tokio::io::{AsyncBufReadExt, BufReader}; // For streaming
-use tokio_util::io::StreamReader; // To convert reqwest stream to tokio's AsyncRead
+use std::io::{self, Write};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio_util::io::StreamReader;
+use chrono::{Local, DateTime}; // For current date and time
+use tokio::fs; // For async file system operations
+use std::path::Path; // For path manipulation
 
-/// `AIAgentApi` trait defines the basic interface for interacting with an AI agent.
+/// AIAgentApiトレイトは、AIエージェントとやり取りするための基本的なインターフェースを定義します。
 #[async_trait]
 pub trait AIAgentApi {
-    /// Asynchronously retrieves a response from the AI based on user input.
+    /// ユーザーの入力に基づいてAIからの応答を非同期に取得します。
     ///
-    /// # Arguments
-    /// * `user_input` - The text input from the user.
+    /// # 引数
+    /// * `user_input` - ユーザーからのテキスト入力。
     ///
-    /// # Returns
-    /// `Result<String, Box<dyn Error>>` - The AI's response string, or an error.
+    /// # 戻り値
+    /// `Result<String, Box<dyn Error>>` - AIからの応答文字列、またはエラー。
     async fn get_ai_response(&mut self, user_input: &str) -> Result<String, Box<dyn Error>>;
 }
 
-// Struct for the request body to the Ollama chat/completions endpoint
+// Ollama APIのchat/completionsエンドポイント用のリクエストボディの構造体
 #[derive(Serialize)]
 struct OllamaChatRequest {
     model: String,
@@ -30,7 +33,7 @@ struct OllamaChatRequest {
     stream: bool,
 }
 
-// Struct for a chat message (includes role and content)
+// チャットメッセージの構造体（ロールとコンテンツを含む）
 #[derive(Serialize, Deserialize, Clone)]
 struct Message {
     role: String,
@@ -40,37 +43,32 @@ struct Message {
 // Ollama streaming response struct
 #[derive(Deserialize)]
 struct OllamaStreamResponse {
-    // Add `serde(default)` so the `choices` field defaults to an empty vector
-    // if it's not present in the response.
     #[serde(default)]
     choices: Vec<StreamChoice>,
     done: Option<bool>,
-    // Other fields like `id`, `object`, `created`, `model`, `system_fingerprint` are ignored here
-    // as they are not specifically needed.
 }
 
-// Internal struct for a choice within a streaming response
+// ストリーミングレスポンス内の選択肢の内部構造体
 #[derive(Deserialize)]
 struct StreamChoice {
-    // For streaming responses, the partial content is in a `delta` field.
     delta: Message,
 }
 
-/// `OllamaAIAgentApi` is an Ollama implementation of the `AIAgentApi` trait.
-/// It communicates with an Ollama server via HTTP to get AI responses.
+/// OllamaAIAgentApiはAIAgentApiトレイトのOllama実装です。
+/// OllamaサーバーとHTTPで通信し、AIの応答を取得します。
 pub struct OllamaAIAgentApi {
     client: Client,
     ollama_url: String,
     model_name: String,
-    chat_history: Vec<Message>, // Stores conversation history
+    chat_history: Vec<Message>, // 会話履歴を保持
 }
 
 impl OllamaAIAgentApi {
-    /// Creates a new instance of `OllamaAIAgentApi`.
+    /// 新しい`OllamaAIAgentApi`のインスタンスを作成します。
     ///
-    /// # Arguments
-    /// * `ollama_url` - The URL of the Ollama server (e.g., "http://localhost:11434").
-    /// * `model_name` - The name of the Ollama model to use (e.g., "llama2").
+    /// # 引数
+    /// * `ollama_url` - OllamaサーバーのURL (例: "http://localhost:11434")。
+    /// * `model_name` - 使用するOllamaモデルの名前 (例: "llama2")。
     pub fn new(ollama_url: String, model_name: String) -> Self {
         OllamaAIAgentApi {
             client: Client::new(),
@@ -78,18 +76,49 @@ impl OllamaAIAgentApi {
             model_name,
             chat_history: vec![Message {
                 role: "system".to_string(),
-                content: "You are a helpful assistant.".to_string(),
+                content: "You are a helpful assistant. You are an AI assistant in Marugame, Kagawa, Japan.".to_string(),
             }],
         }
+    }
+
+    // 現在の日時を取得してフォーマットするヘルパー関数
+    fn get_current_datetime() -> String {
+        let now: DateTime<Local> = Local::now();
+        now.format("%Y-%m-%d %H:%M:%S").to_string()
+    }
+
+    // 指定されたパスのファイル情報を取得するヘルパー関数
+    async fn get_file_status(path: &str) -> String {
+        let path_obj = Path::new(path);
+        if !path_obj.exists() {
+            return format!("パス '{}' は存在しません。", path);
+        }
+
+        let mut entries = match fs::read_dir(path_obj).await {
+            Ok(dir) => dir,
+            Err(e) => return format!("ディレクトリ '{}' の読み取りに失敗しました: {}", path, e),
+        };
+
+        let mut file_info = String::new();
+        file_info.push_str(&format!("ディレクトリ '{}' の内容:\n", path));
+
+        while let Some(entry) = entries.next_entry().await.unwrap_or(None) {
+            let file_name = entry.file_name();
+            let file_type = entry.file_type().await;
+
+            let type_str = match file_type {
+                Ok(ft) if ft.is_file() => "File",
+                Ok(ft) if ft.is_dir() => "Dir",
+                _ => "その他",
+            };
+            file_info.push_str(&format!("- {}: {}\n", type_str, file_name.to_string_lossy()));
+        }
+        file_info
     }
 }
 
 impl Default for OllamaAIAgentApi {
     fn default() -> Self {
-        // Rust's asynchronous runtime is not available within the Default trait,
-        // so `Command::new` here will be a blocking call. While blocking I/O
-        // should generally be avoided outside of an async context (like `tokio::main`),
-        // it is tolerated here for a simplified default implementation.
         let model_name = {
             let output = std::process::Command::new("ollama")
                 .arg("list")
@@ -99,9 +128,9 @@ impl Default for OllamaAIAgentApi {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let model_line = stdout
                 .lines()
-                .nth(1) // Get the second line (after the header)
-                .and_then(|line| line.split_whitespace().next()) // Get the first word (model name)
-                .unwrap_or("llama2"); // Default to llama2 if unable to get
+                .nth(1)
+                .and_then(|line| line.split_whitespace().next())
+                .unwrap_or("llama2");
             model_line.to_string()
         }
         .to_string();
@@ -111,9 +140,28 @@ impl Default for OllamaAIAgentApi {
 
 #[async_trait]
 impl AIAgentApi for OllamaAIAgentApi {
-    // Use &mut self to update chat_history
     async fn get_ai_response(&mut self, user_input: &str) -> Result<String, Box<dyn Error>> {
-        // Add user message to history
+        // 現在のコンテキスト情報を取得
+        let current_datetime = OllamaAIAgentApi::get_current_datetime();
+        // 現在の作業ディレクトリを渡す
+        let current_dir = ".".to_string(); // または env::current_dir().unwrap().to_string_lossy().into_owned() で実際のパスを取得
+        let file_status = Self::get_file_status(&current_dir).await;
+
+        // システムメッセージに現在のコンテキストを追加
+        let context_message_content = format!(
+            "現在の状況: 日時: {}。 場所: 丸亀市、香川県、日本。現在のディレクトリの内容:\n{}",
+            current_datetime, file_status
+        );
+        // 既存のsystemメッセージを更新するか、新しいコンテキストメッセージを追加
+        // ここでは、新しいuserメッセージの前にsystemメッセージとして追加します。
+        // これにより、各リクエストで最新のコンテキストが提供されます。
+        self.chat_history.push(Message {
+            role: "system".to_string(),
+            content: context_message_content,
+        });
+
+
+        // ユーザーメッセージを履歴に追加
         self.chat_history.push(Message {
             role: "user".to_string(),
             content: user_input.to_string(),
@@ -121,13 +169,12 @@ impl AIAgentApi for OllamaAIAgentApi {
 
         let request_body = OllamaChatRequest {
             model: self.model_name.clone(),
-            messages: self.chat_history.clone(), // Include current history in the request
-            stream: true,                        // Enable streaming
+            messages: self.chat_history.clone(),
+            stream: true,
         };
 
         let request_url = format!("{}/v1/chat/completions", self.ollama_url);
 
-        // Send POST request to Ollama API
         let response = self
             .client
             .post(&request_url)
@@ -135,7 +182,6 @@ impl AIAgentApi for OllamaAIAgentApi {
             .send()
             .await?;
 
-        // Check HTTP status code and return a detailed message on error
         if !response.status().is_success() {
             let status = response.status();
             let text = response
@@ -145,15 +191,11 @@ impl AIAgentApi for OllamaAIAgentApi {
             return Err(format!("Ollama APIリクエストが失敗しました。ステータス: {}, ボディ: {}. Ollamaサーバーが {} で実行されており、モデル '{}' が利用可能であることを確認してください。", status, text, self.ollama_url, self.model_name).into());
         }
 
-        // Helper function to convert `reqwest::Error` to `std::io::Error`
         fn reqwest_error_to_io_error(e: reqwest::Error) -> std::io::Error {
             io::Error::other(e)
         }
 
-        // Process the response stream
         let byte_stream = response.bytes_stream().map_err(reqwest_error_to_io_error);
-
-        // Create a reader that implements `AsyncRead` using `StreamReader`
         let mut reader = BufReader::new(StreamReader::new(byte_stream));
 
         let mut full_response_content = String::new();
@@ -163,46 +205,36 @@ impl AIAgentApi for OllamaAIAgentApi {
             buffer.clear();
             let bytes_read = reader.read_line(&mut buffer).await?;
             if bytes_read == 0 {
-                break; // End of stream
+                break;
             }
 
             let line_content = buffer.trim();
             if line_content.is_empty() {
-                continue; // Skip empty lines
+                continue;
             }
 
-            // Remove "data: " prefix
             let json_str = if line_content.starts_with("data: ") {
-                &line_content[6..] // Skip "data: "
+                &line_content[6..]
             } else {
                 line_content
             };
 
-            // Handle "[DONE]" message indicating end of stream
             if json_str == "[DONE]" {
                 break;
             }
 
-            // Parse the JSON line received from the stream
-            // Ollama's streaming usually contains complete JSON objects per line,
-            // but error handling is included for empty or incomplete JSON lines.
             match serde_json::from_str::<OllamaStreamResponse>(json_str) {
                 Ok(stream_response) => {
-                    // Get message content from the first choice's DELTA
                     if let Some(choice) = stream_response.choices.into_iter().next() {
-                        // Print the content immediately
                         print!("{}", choice.delta.content);
-                        io::stdout().flush()?; // Flush to display immediately
+                        io::stdout().flush()?;
                         full_response_content.push_str(&choice.delta.content);
                     }
-                    // Break if `done: true` is received
                     if stream_response.done == Some(true) {
                         break;
                     }
                 }
                 Err(e) => {
-                    // JSON parsing errors might occur with incomplete JSON lines at the end of the stream, etc.
-                    // Log them but continue processing.
                     eprintln!(
                         "OllamaストリームからのJSON行のパースに失敗しました: {:?}, 行: '{}'",
                         e, line_content
@@ -212,10 +244,8 @@ impl AIAgentApi for OllamaAIAgentApi {
             }
         }
 
-        // After the loop, print a newline to ensure the next prompt is on a new line
-        println!(); 
+        println!();
 
-        // Add the assistant's final response to the chat history
         self.chat_history.push(Message {
             role: "assistant".to_string(),
             content: full_response_content.clone(),
