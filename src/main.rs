@@ -1,6 +1,6 @@
 // src/main.rs
 
-use ai_integration::{ChatApp, ChatInterfaceType, AIAgentApiType};
+use ai_integration::{AIAgentApiType, ChatApp, ChatInterfaceType};
 use std::error::Error; // Box<dyn Error>のために必要
 
 #[tokio::main]

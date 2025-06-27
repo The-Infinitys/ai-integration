@@ -4,9 +4,9 @@ pub mod modules;
 
 // modules::chat::* ではなく、modules::chat::{cli, tui} のように直接参照
 use modules::chat::{
-    Chat, 
+    Chat,
+    api::{AIAgentApi, OllamaAIAgentApi}, // OllamaAIAgentApiとAIAgentApiをインポート
     interface::cli::CommandLineChat,
-    api::{AIAgentApi, OllamaAIAgentApi} // OllamaAIAgentApiとAIAgentApiをインポート
 };
 use std::{error::Error, fmt};
 
@@ -21,10 +21,9 @@ impl ChatApp {
     /// デフォルトではCLIインターフェースとOllama APIを使用します。
     pub fn new() -> Self {
         // デフォルトのOllama設定
-        let ollama_url = std::env::var("OLLAMA_URL")
-            .unwrap_or_else(|_| "http://localhost:11434".to_string());
-        let ollama_model = std::env::var("OLLAMA_MODEL")
-            .unwrap_or_else(|_| "llama2".to_string()); // デフォルトモデル
+        let ollama_url =
+            std::env::var("OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
+        let ollama_model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama2".to_string()); // デフォルトモデル
 
         ChatApp {
             chat_interface: Box::new(CommandLineChat),
@@ -33,7 +32,10 @@ impl ChatApp {
     }
 
     /// 特定のチャットインターフェースとAIエージェントAPIを指定して`ChatApp`を作成します。
-    pub fn with_interface_and_api(interface_type: ChatInterfaceType, api_type: AIAgentApiType) -> Self {
+    pub fn with_interface_and_api(
+        interface_type: ChatInterfaceType,
+        api_type: AIAgentApiType,
+    ) -> Self {
         let chat_interface: Box<dyn Chat> = match interface_type {
             ChatInterfaceType::Cli => Box::new(CommandLineChat),
             _ => {
@@ -46,14 +48,17 @@ impl ChatApp {
             AIAgentApiType::Ollama => {
                 let ollama_url = std::env::var("OLLAMA_URL")
                     .unwrap_or_else(|_| "http://localhost:11434".to_string());
-                let ollama_model = std::env::var("OLLAMA_MODEL")
-                    .unwrap_or_else(|_| "llama2".to_string());
+                let ollama_model =
+                    std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama2".to_string());
                 Box::new(OllamaAIAgentApi::new(ollama_url, ollama_model))
-            },
+            }
             // 将来的に他のAPIタイプが追加される可能性があります
         };
 
-        ChatApp { chat_interface, ai_agent_api }
+        ChatApp {
+            chat_interface,
+            ai_agent_api,
+        }
     }
 
     /// チャットアプリケーションの実行を開始します。
