@@ -4,40 +4,43 @@ use reqwest::Client;
 use std::error::Error;
 use std::io::{self, Write};
 use html2md::parse_html;
-use urlencoding; // urlencoding クレートをインポート
-use crate::dprintln; // src/lib.rs または src/main.rs で定義されたマクロをインポート
+use urlencoding;
+use crate::dprintln; // Import the dprintln macro
+use scraper::{Html, Selector}; // Import Html and Selector from scraper
 
-/// 実際のWeb検索またはURLアクセスを実行し、HTMLをMarkdownにパースして返す
+/// Executes a real web search or directly accesses a URL, parses the HTML to Markdown, and returns it.
 ///
-/// # 引数
-/// * `client` - HTTPリクエストに使用するreqwest::Clientインスタンス。
-/// * `debug_mode` - デバッグ出力を有効にするかどうか。
-/// * `query` - Google検索に使用するクエリ（オプション）。
-/// * `url` - 直接アクセスするURL（オプション）。
-/// * `engine` - 検索エンジン（例: "google"）。`query`が指定された場合のみ有効。
+/// # Arguments
+/// * `client` - The `reqwest::Client` instance to use for HTTP requests.
+/// * `debug_mode` - A flag to enable or disable debug output.
+/// * `query` - The query string for Google search (optional).
+/// * `url` - The URL to directly access (optional).
+/// * `engine` - The search engine to use (e.g., "google"). Only relevant if `query` is provided.
 ///
-/// # 戻り値
-/// `Result<String, Box<dyn Error>>` - Markdown形式の検索結果、またはエラー。
+/// # Returns
+/// `Result<String, Box<dyn Error>>` - The search/access result in Markdown format, or an error.
 pub async fn execute_web_search(
-    client: &Client, // Clientを引数として受け取る
-    debug_mode: bool, // デバッグモードのフラグを引数として受け取る
+    client: &Client,
+    debug_mode: bool,
     query: Option<&str>,
     url: Option<&str>,
     engine: Option<&str>,
 ) -> Result<String, Box<dyn Error>> {
     let fetch_url;
     let action_description: String;
+    let mut is_google_search = false;
 
     if let Some(target_url) = url {
-        // URLが指定された場合、直接そのURLにアクセス
+        // If a URL is specified, access it directly.
         fetch_url = target_url.to_string();
         action_description = format!("URLアクセス: '{}'", target_url);
     } else if let Some(search_query) = query {
-        // クエリが指定された場合、Google検索を実行
+        // If a query is specified, perform a Google search.
         let used_engine = engine.unwrap_or("google");
-        // Google検索URLを構築
+        // Build the Google search URL
         fetch_url = format!("https://www.google.com/search?q={}", urlencoding::encode(search_query));
         action_description = format!("{}検索: '{}'", used_engine, search_query);
+        is_google_search = true;
     } else {
         return Err("web_searchツールには 'query' または 'url' のいずれかが必要です。".into());
     }
@@ -73,12 +76,53 @@ pub async fn execute_web_search(
         )
     })?;
 
-    // HTMLをMarkdownに変換
-    let markdown_content = parse_html(&html_content);
+    let markdown_content: String;
+
+    if is_google_search {
+        // Google検索結果ページから主要な結果を抽出してMarkdownに整形
+        dprintln!(debug_mode, "[AI (ツール): Google検索結果のHTMLをパース中...]");
+        let document = Html::parse_document(&html_content);
+
+        // Googleの検索結果の主要な要素をターゲットとするCSSセレクタ
+        // これらのセレクタはGoogleのHTML構造に依存し、変更される可能性があります。
+        let result_selector = Selector::parse("div.g").unwrap(); // Individual search result blocks
+        let title_selector = Selector::parse("h3.LC20lb.MBeuO.DKV0Md").unwrap(); // Title of a result
+        let link_selector = Selector::parse("div.yuRUbf a").unwrap(); // Link element
+        let snippet_selector = Selector::parse("div.VwiC3b").unwrap(); // Snippet/description
+
+        let mut results_md = String::new();
+        results_md.push_str("### Google検索結果:\n");
+
+        for (i, element) in document.select(&result_selector).enumerate() {
+            let title = element.select(&title_selector).next().map(|n| n.text().collect::<String>());
+            let link = element.select(&link_selector).next().and_then(|n| n.value().attr("href"));
+            let snippet = element.select(&snippet_selector).next().map(|n| n.text().collect::<String>());
+
+            if let (Some(t), Some(l)) = (title, link) {
+                results_md.push_str(&format!("{}. [{}]({})\n", i + 1, t, l));
+                if let Some(s) = snippet {
+                    results_md.push_str(&format!("   {}\n", s.trim()));
+                }
+                results_md.push_str("\n");
+            }
+        }
+
+        if results_md.len() <= "### Google検索結果:\n".len() {
+            // 特定の要素が見つからなかった場合、ページ全体をMarkdownに変換するフォールバック
+            dprintln!(debug_mode, "[AI (ツール): 特定のGoogle検索結果要素が見つかりませんでした。ページ全体をMarkdownに変換します。]");
+            markdown_content = parse_html(&html_content);
+        } else {
+            markdown_content = results_md;
+        }
+
+    } else {
+        // 通常のWebページアクセスの場合、ページ全体をMarkdownに変換
+        dprintln!(debug_mode, "[AI (ツール): Webページ全体をMarkdownに変換中...]");
+        markdown_content = parse_html(&html_content);
+    }
 
     // トークン制限を考慮して結果を切り捨てる
     let truncated_markdown = if markdown_content.len() > 4000 {
-        // 適切な長さに調整
         format!(
             "{}\n...(結果は長すぎるため一部省略されました)",
             &markdown_content[..4000]
