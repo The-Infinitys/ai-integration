@@ -54,8 +54,6 @@ struct OllamaStreamResponse {
 struct StreamChoice {
     // For streaming responses, the partial content is in a `delta` field.
     delta: Message,
-    // index: Option<u32>,
-    // finish_reason: Option<String>,
 }
 
 /// `OllamaAIAgentApi` is an Ollama implementation of the `AIAgentApi` trait.
