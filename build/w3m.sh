@@ -1,20 +1,18 @@
 #!/bin/bash
 set -e
 
-# スクリプトのディレクトリからの相対パスでlib/w3m/に移動
-cd "$(dirname "$0")/../lib/w3m/"
-
-# configureとmake
-if [ ! -f configure ]; then
-    echo "Error: configureスクリプトが見つかりません。w3mのソースが正しく配置されているか確認してください。"
+# w3mのバイナリパスを取得（whichで探す）
+W3M_BIN_PATH=$(which w3m)
+if [ -z "$W3M_BIN_PATH" ]; then
+    echo "Error: w3mがシステムにインストールされていません。sudo apt install w3m などでインストールしてください。"
     exit 1
 fi
 
-./configure
-make
+# lib/binディレクトリを作成し、w3mバイナリをコピー
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DEST_DIR="$SCRIPT_DIR/../lib/bin"
+mkdir -p "$DEST_DIR"
+cp "$W3M_BIN_PATH" "$DEST_DIR/"
 
-# バイナリをlib/binに移動
-mkdir -p ../../bin
-cp w3m ../../bin/
+echo "w3mバイナリを$DEST_DIRにコピーしました。"
 
-echo "w3mのビルドと配置が完了しました。"
