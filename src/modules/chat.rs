@@ -2,6 +2,7 @@
 
 // 各チャットインターフェースの実装ファイルをサブモジュールとして宣言
 pub mod interface;
+// AIエージェントAPIの実装ファイルをサブモジュールとして宣言
 pub mod api;
 
 use async_trait::async_trait;

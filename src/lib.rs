@@ -3,27 +3,37 @@
 pub mod modules;
 
 // modules::chat::* ではなく、modules::chat::{cli, tui} のように直接参照
-use modules::chat::{Chat, interface::cli::CommandLineChat};
+use modules::chat::{
+    Chat, 
+    interface::cli::CommandLineChat,
+    api::{AIAgentApi, OllamaAIAgentApi} // OllamaAIAgentApiとAIAgentApiをインポート
+};
 use std::{error::Error, fmt};
 
 /// `ChatApp`構造体はCLIチャットアプリケーション全体を管理します。
 pub struct ChatApp {
     chat_interface: Box<dyn Chat>,
-    // どのインターフェースを使用するかを示すフィールドを追加することもできます
-    // current_interface_type: ChatInterfaceType,
+    ai_agent_api: Box<dyn AIAgentApi>, // AIエージェントAPIのインスタンスを追加
 }
 
 impl ChatApp {
     /// 新しい`ChatApp`のインスタンスを作成します。
-    /// デフォルトではCLIインターフェースを使用します。
+    /// デフォルトではCLIインターフェースとOllama APIを使用します。
     pub fn new() -> Self {
+        // デフォルトのOllama設定
+        let ollama_url = std::env::var("OLLAMA_URL")
+            .unwrap_or_else(|_| "http://localhost:11434".to_string());
+        let ollama_model = std::env::var("OLLAMA_MODEL")
+            .unwrap_or_else(|_| "llama2".to_string()); // デフォルトモデル
+
         ChatApp {
             chat_interface: Box::new(CommandLineChat),
+            ai_agent_api: Box::new(OllamaAIAgentApi::new(ollama_url, ollama_model)),
         }
     }
 
-    /// 特定のチャットインターフェースを指定して`ChatApp`を作成します。
-    pub fn with_interface(interface_type: ChatInterfaceType) -> Self {
+    /// 特定のチャットインターフェースとAIエージェントAPIを指定して`ChatApp`を作成します。
+    pub fn with_interface_and_api(interface_type: ChatInterfaceType, api_type: AIAgentApiType) -> Self {
         let chat_interface: Box<dyn Chat> = match interface_type {
             ChatInterfaceType::Cli => Box::new(CommandLineChat),
             _ => {
@@ -31,11 +41,23 @@ impl ChatApp {
                 Box::new(CommandLineChat)
             }
         };
-        ChatApp { chat_interface }
+
+        let ai_agent_api: Box<dyn AIAgentApi> = match api_type {
+            AIAgentApiType::Ollama => {
+                let ollama_url = std::env::var("OLLAMA_URL")
+                    .unwrap_or_else(|_| "http://localhost:11434".to_string());
+                let ollama_model = std::env::var("OLLAMA_MODEL")
+                    .unwrap_or_else(|_| "llama2".to_string());
+                Box::new(OllamaAIAgentApi::new(ollama_url, ollama_model))
+            },
+            // 将来的に他のAPIタイプが追加される可能性があります
+        };
+
+        ChatApp { chat_interface, ai_agent_api }
     }
 
     /// チャットアプリケーションの実行を開始します。
-    /// ユーザーからの入力を受け取り、AIの応答（現在はダミー）を表示します。
+    /// ユーザーからの入力を受け取り、AIの応答を表示します。
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         loop {
             // ユーザーからの入力を受け取る
@@ -48,9 +70,8 @@ impl ChatApp {
                 break;
             }
 
-            // ここでAIエージェントのロジックを呼び出す
-            // 現時点ではダミーの応答を返します
-            let ai_response = self.process_ai_agent_logic(&user_input).await?;
+            // AIエージェントのロジックを呼び出す
+            let ai_response = self.ai_agent_api.get_ai_response(&user_input).await?;
 
             // AIの応答を表示する
             self.chat_interface
@@ -58,15 +79,6 @@ impl ChatApp {
                 .await?;
         }
         Ok(())
-    }
-
-    /// AIエージェントのダミーロジック。
-    /// 将来的には、LLM呼び出し、ツール実行、コード編集などがここに入ります。
-    async fn process_ai_agent_logic(&self, input: &str) -> Result<String, Box<dyn Error>> {
-        // ここに実際のAIエージェントの処理を記述
-        // 例えば、LLMへのAPIコール、ファイル操作、コマンド実行など
-        let response = format!("AIからの応答: 「{}」について考え中です...", input);
-        Ok(response)
     }
 }
 
@@ -82,6 +94,7 @@ pub enum ChatInterfaceType {
     Tui,
     Gui,
 }
+
 impl fmt::Display for ChatInterfaceType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -91,6 +104,24 @@ impl fmt::Display for ChatInterfaceType {
                 Self::Gui => "gui",
                 Self::Cli => "cli",
                 Self::Tui => "tui",
+            }
+        )
+    }
+}
+
+/// 使用するAIエージェントAPIのタイプを列挙します。
+pub enum AIAgentApiType {
+    Ollama,
+    // Gemini, OpenAIなど、将来的に追加される可能性があります
+}
+
+impl fmt::Display for AIAgentApiType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Ollama => "ollama",
             }
         )
     }
