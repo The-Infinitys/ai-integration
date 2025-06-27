@@ -37,6 +37,7 @@ dependencies = [
  "futures",
  "futures-util",
  "html2md",
+ "html_editor",
  "ratatui",
  "regex",
  "reqwest",
@@ -715,6 +716,12 @@ dependencies = [
  "markup5ever 0.14.1",
  "match_token",
 ]
+
+[[package]]
+name = "html_editor"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac13c34d38375a1205ed152e33fbb2cc638c8b65fd5d4c9506796dd9416c5fc0"
 
 [[package]]
 name = "http"
