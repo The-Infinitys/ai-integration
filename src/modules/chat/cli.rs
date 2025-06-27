@@ -2,8 +2,8 @@
 
 use super::Chat; // 親モジュールで定義されたChatトレイトをインポート
 use async_trait::async_trait;
-use std::io::{self, Write};
 use std::error::Error;
+use std::io::{self, Write};
 
 /// `CommandLineChat`は`Chat`トレイトを実装し、CLIでの入出力を行います。
 pub struct CommandLineChat;
