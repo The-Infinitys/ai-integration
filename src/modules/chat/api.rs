@@ -20,19 +20,12 @@ use tokio_util::io::StreamReader; // reqwestストリームをtokioのAsyncRead�
 
 pub trait AIAgentApi {
     /// ユーザーの入力に基づいてAIからの応答を非同期に取得します。
-
     ///
-
     /// # 引数
-
     /// * `user_input` - ユーザーからのテキスト入力。
-
     ///
-
     /// # 戻り値
-
     /// `Result<String, Box<dyn Error>>` - AIからの応答文字列、またはエラー。
-
     async fn get_ai_response(&mut self, user_input: &str) -> Result<String, Box<dyn Error>>;
 }
 
@@ -84,9 +77,7 @@ struct StreamChoice {
 }
 
 /// `OllamaAIAgentApi`は`AIAgentApi`トレイトのOllama実装です。
-
 /// OllamaサーバーとHTTPで通信し、AIの応答を取得します。
-
 pub struct OllamaAIAgentApi {
     client: Client,
 
@@ -99,15 +90,10 @@ pub struct OllamaAIAgentApi {
 
 impl OllamaAIAgentApi {
     /// 新しい`OllamaAIAgentApi`のインスタンスを作成します。
-
     ///
-
     /// # 引数
-
     /// * `ollama_url` - OllamaサーバーのURL (例: "http://localhost:11434")。
-
     /// * `model_name` - 使用するOllamaモデルの名前 (例: "llama2")。
-
     pub fn new(ollama_url: String, model_name: String) -> Self {
         OllamaAIAgentApi {
             client: Client::new(),
