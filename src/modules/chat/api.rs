@@ -174,7 +174,7 @@ impl AIAgentApi for OllamaAIAgentApi {
         // `reqwest::Error` を `std::io::Error` に変換するヘルパー関数
 
         fn reqwest_error_to_io_error(e: reqwest::Error) -> std::io::Error {
-            std::io::Error::new(std::io::ErrorKind::Other, e)
+            std::io::Error::other(e)
         }
 
         // レスポンスストリームを処理
