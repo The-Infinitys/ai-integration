@@ -45,14 +45,7 @@ impl ChatApp {
         };
 
         let ai_agent_api: Box<dyn AIAgentApi> = match api_type {
-            AIAgentApiType::Ollama => {
-                let ollama_url = std::env::var("OLLAMA_URL")
-                    .unwrap_or_else(|_| "http://localhost:11434".to_string());
-                let ollama_model =
-                    std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama2".to_string());
-                Box::new(OllamaAIAgentApi::new(ollama_url, ollama_model))
-            }
-            // 将来的に他のAPIタイプが追加される可能性があります
+            AIAgentApiType::Ollama => Box::new(OllamaAIAgentApi::default()), // 将来的に他のAPIタイプが追加される可能性があります
         };
 
         ChatApp {
