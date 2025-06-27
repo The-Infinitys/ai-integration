@@ -110,7 +110,26 @@ impl OllamaAIAgentApi {
         }
     }
 }
+impl Default for OllamaAIAgentApi {
+    fn default() -> Self {
+        let model_name = {
+            let output = std::process::Command::new("ollama")
+                .arg("list")
+                .output()
+                .expect("Failed to execute ollama list command");
 
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let model_line = stdout
+                .lines()
+                .nth(1) // 2行目を取得 (ヘッダー行の次)
+                .and_then(|line| line.split_whitespace().next()) // 最初の単語 (モデル名) を取得
+                .unwrap_or("llama2"); // 取得できない場合はデフォルトでllama2
+            model_line.to_string()
+        }
+        .to_string();
+        Self::new("http://localhost:11434".to_string(), model_name)
+    }
+}
 #[async_trait]
 
 impl AIAgentApi for OllamaAIAgentApi {
