@@ -1,0 +1,3 @@
+[submodule "www-search"]
+	path = www-search
+	url = https://github.com/The-Infinitys/www-search
