@@ -9,6 +9,12 @@ pub struct Config {
     pub gemini_model: String,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Config {
     pub fn new() -> Self {
         // !!! 警告: これはデモンストレーション目的であり、APIキーをハードコードすることは非推奨です。

@@ -6,7 +6,6 @@ use std::error::Error;
 use std::fmt::{self, Display};
 use std::fs;
 use std::pin::Pin;
-use tokio;
 
 // 新しいモジュールをインポート
 mod ai;
