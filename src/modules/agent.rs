@@ -1,11 +1,10 @@
 // src/modules/agent.rs
 pub mod api;
-use api::{AIApi, ApiClient}; // ApiClientも必要なので残す
+use api::{AIApi, ApiClient};
 use chrono::{self, Utc};
 use std::collections::HashMap;
 use futures::stream::BoxStream;
 
-// 新しく AuraScriptRunner をインポート
 use crate::modules::aurascript::AuraScriptRunner;
 
 type NoteTag = Vec<String>;
@@ -17,9 +16,10 @@ pub struct AIAgent {
     pub chat: Vec<Message>,
     pub api: AIApi,
     pub note: Vec<(NoteTag, Note)>,
-    // Add AuraScriptRunner here so the agent can use it.
-    // エージェントがAuraScriptRunnerを使用できるようにここに追加。
     pub aurascript_runner: AuraScriptRunner,
+    /// A flag indicating whether the AI is allowed to execute AuraScript commands autonomously.
+    /// AIがAuraScriptコマンドを自律的に実行できるかどうかを示すフラグ。
+    pub can_execute_aurascript: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -71,7 +71,13 @@ impl AIAgent {
     /// * `api` - The API configuration for the agent to use.
     /// * `initial_system_prompt` - The initial system prompt to set for the agent.
     /// * `aurascript_runner` - The AuraScript runner instance for executing commands.
-    pub fn new(api: AIApi, initial_system_prompt: impl Into<String>, aurascript_runner: AuraScriptRunner) -> Self {
+    /// * `can_execute_aurascript` - Whether the agent is allowed to execute AuraScript commands autonomously.
+    pub fn new(
+        api: AIApi,
+        initial_system_prompt: impl Into<String>,
+        aurascript_runner: AuraScriptRunner,
+        can_execute_aurascript: bool,
+    ) -> Self {
         let mut system_map = HashMap::new();
         system_map.insert("main_system_prompt".to_string(), initial_system_prompt.into());
 
@@ -80,7 +86,8 @@ impl AIAgent {
             chat: Vec::new(),
             api,
             note: Vec::new(),
-            aurascript_runner, // Assign the passed runner
+            aurascript_runner,
+            can_execute_aurascript, // Initialize the flag
         }
     }
 
@@ -116,6 +123,12 @@ impl AIAgent {
         self.system.insert("main_system_prompt".to_string(), new_prompt.into());
     }
 
+    /// Sets whether the agent can execute AuraScript commands autonomously.
+    /// エージェントがAuraScriptコマンドを自律的に実行できるかどうかを設定します。
+    pub fn set_can_execute_aurascript(&mut self, enabled: bool) {
+        self.can_execute_aurascript = enabled;
+    }
+
     /// Sends a user prompt to the configured AI API and returns a stream of the AI's response chunks.
     pub async fn send_prompt_to_ai(&self, user_prompt: &str) -> Result<BoxStream<'static, Result<String, String>>, String> {
         let mut messages: Vec<serde_json::Value> = Vec::new();
@@ -139,16 +152,25 @@ impl AIAgent {
 impl Default for AIAgent {
     fn default() -> Self {
         let mut system_map = HashMap::new();
+        // Updated system prompt to teach AI about AuraScript.
+        // AuraScriptについてAIに教えるためにシステムプロンプトを更新。
         system_map.insert(
             "main_system_prompt".to_string(),
-            "You are a helpful AI assistant. Respond concisely and avoid using external commands unless explicitly asked.".to_string(),
+            r#"あなたはAIアシスタントです。ユーザーの質問に簡潔に答えます。
+必要に応じて、AuraScriptコマンドを使って外部ツールと対話できます。
+AuraScriptコマンドは、`!コマンド` または `/コマンド` の形式で出力してください。
+例えば、現在のディレクトリの内容を知りたい場合は `!ls -l` と出力できます。
+ウェブ検索が必要な場合は `/web_search [検索クエリ]` と出力できます。
+コマンドを実行する際は、応答全体をコマンドのみにしてください。
+コマンドを実行した後、その出力が与えられ、それに基づいて思考し、最終的な回答を生成してください。
+もしコマンドを実行する必要がない場合は、直接ユーザーに返信してください。
+"#
+            .to_string(),
         );
 
         let chat_history = Vec::new();
         let note_history = Vec::new();
 
-        // Create a default AuraScriptRunner for the default agent.
-        // デフォルトエージェントのためにデフォルトのAuraScriptRunnerを作成。
         let default_aurascript_runner = AuraScriptRunner::default();
 
         Self {
@@ -157,6 +179,7 @@ impl Default for AIAgent {
             api: AIApi::default(),
             note: note_history,
             aurascript_runner: default_aurascript_runner,
+            can_execute_aurascript: false, // Default to not executing commands autonomously
         }
     }
 }
