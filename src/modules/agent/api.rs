@@ -64,6 +64,22 @@ impl AIApi {
     }
 }
 
+/// Provides a default `AIApi` configuration using the default OpenAI client.
+/// デフォルトのOpenAIクライアントを使用するデフォルトの `AIApi` 設定を提供します。
+impl Default for AIApi {
+    fn default() -> Self {
+        let mut config = HashMap::new();
+        // The default model for OpenAI locally is often 'llama2' via Ollama.
+        // ローカルのOpenAI互換サービスでは、デフォルトモデルはOllama経由の'llama2'であることが多い。
+        config.insert("model".to_string(), "llama2".to_string());
+        Self {
+            client: ApiClient::OpenAI(openai::OpenAIApi::default()),
+            config,
+        }
+    }
+}
+
+
 // The `ApiType` enum is now less directly involved in dispatch but can still be used for
 // configuration or informational purposes if needed elsewhere.
 // `ApiType` enumは、ディスパッチに直接関与することは少なくなりましたが、必要に応じて

@@ -1,11 +1,9 @@
 // src/modules/agent.rs
 pub mod api;
-use api::{AIApi, AiService, ApiClient}; // Import AiService and ApiClient
+use api::{AIApi, AiService, ApiClient};
 use chrono::{self, Utc};
 use std::collections::HashMap;
 
-// Using a type alias for Vec<String> as originally defined.
-// The 'note' field will be a Vec of (NoteTag, Note) tuples, as Vec<String> cannot be a HashMap key directly.
 type NoteTag = Vec<String>;
 
 /// Represents the AI Agent itself.
@@ -197,5 +195,35 @@ impl AIAgent {
         // Use the AiService trait to send these constructed messages.
         // AiServiceトレイトを使って構築されたこれらのメッセージを送信。
         self.api.client.as_ai_service().send_messages(messages).await
+    }
+}
+
+/// Provides a default `AIAgent` with basic configuration and a default API client.
+/// 基本的な設定とデフォルトのAPIクライアントを持つデフォルトの `AIAgent` を提供します。
+impl Default for AIAgent {
+    fn default() -> Self {
+        let mut system_map = HashMap::new();
+        // Set a default system prompt for the agent.
+        // エージェントのデフォルトシステムプロンプトを設定します。
+        system_map.insert(
+            "main_system_prompt".to_string(),
+            "You are a helpful AI assistant. Respond concisely and avoid using external commands unless explicitly asked.".to_string(),
+        );
+
+        // Initialize chat and note history as empty.
+        // チャットとノートの履歴を空で初期化します。
+        // This ensures that `Character::Cmd` messages are not present by default
+        // as part of the agent's initial state or history.
+        // これにより、エージェントの初期状態や履歴に `Character::Cmd` メッセージが
+        // デフォルトで存在しないことが保証されます。
+        let chat_history = Vec::new();
+        let note_history = Vec::new();
+
+        Self {
+            system: system_map,
+            chat: chat_history,
+            api: AIApi::default(), // Use the default AIApi (which uses OpenAI's default)
+            note: note_history,
+        }
     }
 }

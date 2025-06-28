@@ -12,42 +12,30 @@ use tokio; // async mainのためにtokioをインポート
 async fn main() -> Result<(), std::io::Error> {
     println!("Hello from AI Agent project!");
     println!("Type your message and press Enter. Type '/exit' to quit.");
-    println!("\n--- IMPORTANT: Set your OpenAI API Key ---");
-    println!("Please set the OPENAI_API_KEY environment variable before running.");
-    println!("Example (Linux/macOS): export OPENAI_API_KEY='your-key-here'");
-    println!("Example (Windows Cmd): set OPENAI_API_KEY=your-key-here");
+    println!("\n--- Using Default AI Agent Configuration ---");
+    println!("  API Base URL: http://localhost:11434/v1/chat/completions");
+    println!("  Default Model: llama2 (or similar local LLM)");
+    println!("  No OpenAI API Key needed for local setup.");
     println!("------------------------------------------");
     println!("Try commands like 'note test', 'get test note', or 'history' for demonstration.");
 
 
-    // Get OpenAI API Key from environment variable
-    // 環境変数からOpenAI APIキーを取得
-    let openai_api_key = std::env::var("OPENAI_API_KEY")
-        .expect("OPENAI_API_KEY environment variable not set. Please set it to your OpenAI API key to proceed.");
+    // Create an AIAgent instance using the default configuration.
+    // This will automatically use AIApi::default(), which in turn uses OpenAIApi::default()
+    // pointing to http://localhost:11434/v1/chat/completions.
+    // デフォルト設定を使用してAIAgentインスタンスを作成します。
+    // これにより、AIApi::default()が自動的に使用され、
+    // それはOpenAIApi::default()を使用してhttp://localhost:11434/v1/chat/completionsを指します。
+    let mut agent = AIAgent::default();
 
-    // Initialize OpenAI API client with your API key and chosen model.
-    // あなたのAPIキーと選択したモデルでOpenAI APIクライアントを初期化します。
-    // You can change "gpt-3.5-turbo" to "gpt-4" or other models as needed.
-    // 必要に応じて "gpt-3.5-turbo" を "gpt-4" または他のモデルに変更できます。
-    let openai_client = OpenAIApi::new(openai_api_key, "gpt-3.5-turbo");
+    // You can inspect the default configuration (optional)
+    // デフォルト設定を検査できます（オプション）
+    if let Some(main_prompt) = agent.get_main_system_prompt() {
+        println!("\nAgent's Initial System Prompt: {}", main_prompt);
+    }
+    // Note: To access the model name, you'd typically need to downcast or add a getter in AIApi
+    // println!("Agent's API Model: {}", agent.api.config.get("model").unwrap_or(&"unknown".to_string()));
 
-    // Wrap the OpenAI client in ApiClient enum.
-    // OpenAIクライアントをApiClient enumでラップします。
-    let api_client = ApiClient::OpenAI(openai_client);
-
-    // Create AIApi instance, holding the specific API client.
-    // AIApiインスタンスを作成し、特定のAPIクライアントを保持させます。
-    let mut api = AIApi::new(api_client);
-    // Optionally store the model name in AIApi's config as well for easy access/logging.
-    // オプションで、モデル名をAIApiの設定にも保存し、アクセス/ロギングを容易にします。
-    api.add_config("model".to_string(), "gpt-3.5-turbo".to_string());
-
-    // Create an AIAgent instance with the API configuration and an initial system prompt.
-    // API設定と初期システムプロンプトを持つAIAgentインスタンスを作成します。
-    let mut agent = AIAgent::new(
-        api,
-        "You are a helpful AI assistant named RustAI. Respond concisely.", // AIエージェントの役割と名前
-    );
 
     loop {
         print!("\nUser Input: ");
@@ -86,7 +74,12 @@ async fn main() -> Result<(), std::io::Error> {
 
         // Send the user's prompt to the actual AI API via the agent's method.
         // ユーザーのプロンプトをエージェントのメソッドを介して実際のAI APIに送信します。
-        println!("\nSending to AI...");
+        println!("\nSending to AI (via {} model at {})...",
+            agent.api.config.get("model").unwrap_or(&"unknown".to_string()),
+            match &agent.api.client {
+                ApiClient::OpenAI(o) => o.base_url.clone(), // Access base_url through specific client type
+            }
+        );
         match agent.send_prompt_to_ai(trimmed_input).await {
             Ok(ai_response_text) => {
                 // If successful, add AI's response to chat history.

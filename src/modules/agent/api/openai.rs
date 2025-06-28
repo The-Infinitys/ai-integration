@@ -11,8 +11,8 @@ use super::AiService; // Import the AiService trait from the parent module
 pub struct OpenAIApi {
     client: Client, // HTTP client for making requests. リクエストを行うためのHTTPクライアント。
     api_key: String, // OpenAI API key. OpenAI APIキー。
-    base_url: String, // Base URL for OpenAI chat completions endpoint. OpenAIチャット補完エンドポイントのベースURL。
-    model: String, // The specific OpenAI model to use (e.g., "gpt-3.5-turbo"). 使用する特定のOpenAIモデル（例： "gpt-3.5-turbo"）。
+    pub base_url: String, // Base URL for OpenAI chat completions endpoint. OpenAIチャット補完エンドポイントのベースURL。
+    pub model: String, // The specific OpenAI model to use (e.g., "gpt-3.5-turbo"). 使用する特定のOpenAIモデル（例： "gpt-3.5-turbo"）。
 }
 
 impl OpenAIApi {
@@ -28,6 +28,19 @@ impl OpenAIApi {
             api_key: api_key.into(),
             base_url: "https://api.openai.com/v1/chat/completions".to_string(), // Standard endpoint
             model: model.into(),
+        }
+    }
+}
+
+/// Provides a default `OpenAIApi` configuration suitable for local OpenAI-compatible endpoints (e.g., Ollama).
+/// ローカルのOpenAI互換エンドポイント（例: Ollama）に適したデフォルトの `OpenAIApi` 設定を提供します。
+impl Default for OpenAIApi {
+    fn default() -> Self {
+        Self {
+            client: Client::new(),
+            api_key: "sk-DUMMY_KEY_FOR_LOCAL_USE".to_string(), // A dummy key, often not needed for local LLMs
+            base_url: "http://localhost:11434/v1/chat/completions".to_string(), // Default for Ollama etc.
+            model: "llama2".to_string(), // Common default model for local LLMs via Ollama
         }
     }
 }
