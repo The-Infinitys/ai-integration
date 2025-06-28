@@ -32,15 +32,19 @@ impl OpenAIApi {
         Self {
             client: Client::new(),
             api_key: api_key.into(),
-            base_url: "https://api.openai.com/v1/chat/completions".to_string(),
+            base_url: "https://api.openai.com/v1/chat/completions".to_string(), // Standard endpoint (HTTPS)
             model: model.into(),
         }
     }
+    /// Creates a new `OpenAIApi` instance configured for local Ollama.
+    /// ローカルOllama用に設定された新しい `OpenAIApi` インスタンスを作成します。
+    /// This uses a base URL of `http://localhost:11434/v1/chat/completions` and no API key.
+    /// これは `http://localhost:11434/v1/chat/completions` のベースURLを使用し、APIキーは不要です。
     pub fn local(model: impl Into<String>) -> Self {
         Self {
             client: Client::new(),
-            api_key: "".into(),
-            base_url: "https://localhost:11434/v1/chat/completions".to_string(),
+            api_key: "".into(), // No API key for local Ollama
+            base_url: "http://localhost:11434/v1/chat/completions".to_string(), // Corrected to HTTP
             model: model.into(),
         }
     }
@@ -62,9 +66,8 @@ impl OpenAIApi {
                     if let Some(first_model_line) = lines.next() {
                         if let Some(model_name) = first_model_line.split_whitespace().next() {
                             println!("[INFO] Detected Ollama model: '{}'. Using it for default.", model_name);
-                            return Self::local(
-                                model_name.to_string(),
-                            );
+                            // Use Self::local with the detected model name
+                            return Self::local(model_name.to_string());
                         }
                     }
                     eprintln!("[WARN] 'ollama list' executed successfully but no models found or parsing failed. Falling back to default 'llama2'.");
@@ -87,12 +90,9 @@ impl OpenAIApi {
 /// ローカルのOpenAI互換エンドポイント（例: Ollama）に適したデフォルトの `OpenAIApi` 設定を提供します。
 impl Default for OpenAIApi {
     fn default() -> Self {
-        Self {
-            client: Client::new(),
-            api_key: "".to_string(),
-            base_url: "http://localhost:11434/v1/chat/completions".to_string(),
-            model: "llama2".to_string(),
-        }
+        // Now calling the `local` constructor for consistency
+        // 一貫性のために `local` コンストラクタを呼び出す
+        Self::local("llama2".to_string())
     }
 }
 
@@ -112,6 +112,8 @@ impl AiService for OpenAIApi {
         }
 
         // Structs for deserializing the streaming response deltas from OpenAI.
+        // Ollama often returns content directly in `delta` and sometimes includes `role` at first.
+        // Ollamaはしばしば`delta`内に直接contentを返し、時には最初に`role`を含む。
         #[derive(Deserialize, Debug)]
         struct ChatCompletionChunk {
             choices: Vec<Choice>,
@@ -120,12 +122,16 @@ impl AiService for OpenAIApi {
         #[derive(Deserialize, Debug)]
         struct Choice {
             delta: DeltaContent,
+            #[serde(default)] // `finish_reason` might not be present in every chunk
+            finish_reason: Option<String>,
         }
 
         #[derive(Deserialize, Debug)]
         struct DeltaContent {
             #[serde(default)]
             content: Option<String>,
+            #[serde(default)] // `role` might be present only in the first delta chunk
+            role: Option<String>,
         }
 
         // Build the request body, enabling streaming.
@@ -153,12 +159,10 @@ impl AiService for OpenAIApi {
             return Err(format!("API returned an error: Status={}, Body={}", status, text));
         }
 
-        // Move `response.bytes_stream()` into the initial state of `try_unfold`.
-        // `response.bytes_stream()` を `try_unfold` の初期状態に移動します。
-        let initial_state = (BytesMut::new(), response.bytes_stream());
+        let mut byte_stream = response.bytes_stream();
 
-        // State for try_unfold: (BytesMut buffer, Stream of Bytes)
-        // try_unfold の状態: (BytesMut バッファ, バイトのストリーム)
+        let initial_state = (BytesMut::new(), byte_stream);
+
         let processed_stream = futures::stream::try_unfold(initial_state, move |(mut buffer, mut byte_stream)| async move {
             loop {
                 // Try to find a complete line in the buffer
@@ -172,17 +176,25 @@ impl AiService for OpenAIApi {
                             // Signal end of stream
                             return Ok(None); // This terminates the stream
                         } else {
+                            // Attempt to parse the JSON chunk
+                            // JSONチャンクをパースしようと試みる
                             match serde_json::from_str::<ChatCompletionChunk>(json_str) {
                                 Ok(chunk) => {
+                                    // Extract content from the first choice's delta.
+                                    // Ollama might sometimes send an empty delta or only a role.
+                                    // 最初の選択肢のデルタからコンテンツを抽出。
+                                    // Ollamaは時々空のデルタやロールのみを送信する場合がある。
                                     if let Some(content) = chunk.choices.into_iter().next().and_then(|choice| choice.delta.content) {
-                                        // Return the content as Ok(String) and continue with the remaining state
-                                        // コンテンツを Ok(String) として返し、残りの状態で続行
-                                        return Ok(Some((content, (buffer, byte_stream)))); // Return content, and the (buffer, byte_stream) tuple as the next state
+                                        // Return the content and continue with the remaining state
+                                        return Ok(Some((content, (buffer, byte_stream))));
+                                    } else {
+                                        // If content is empty or not found in this chunk, continue processing buffer
+                                        // このチャンクでコンテンツが空または見つからない場合、バッファの処理を続行
+                                        continue; // Loop again to process next line in buffer
                                     }
                                 }
                                 Err(e) => {
                                     eprintln!("Failed to parse JSON chunk: {} (Line: {})", e, json_str);
-                                    // Propagate parsing error as the error of the stream
                                     return Err(format!("Failed to parse JSON chunk: {}", e));
                                 }
                             }
@@ -204,7 +216,7 @@ impl AiService for OpenAIApi {
                 }
             }
         })
-        .map_err(|e| e.to_string()) // Convert any internal error from try_unfold into a String error for the outer Result
+        .map_err(|e| e.to_string())
         .boxed();
 
         Ok(processed_stream)
