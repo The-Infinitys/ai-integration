@@ -1,0 +1,31 @@
+// src/modules/agent.rs
+pub mod api;
+use api::AIApi;
+use chrono;
+use std::collections::HashMap;
+type NoteTag = Vec<String>;
+pub struct AIAgent {
+    // システムプロンプト。AIが自分の役割や自分の機能を理解するためのデータを入れておく。
+    system: HashMap<String, String>,
+    // チャット履歴
+    chat: Vec<Message>,
+    // AIに対してデータを送信したりするために使用するAPIの情報を保存する
+    api: AIApi,
+    // AIがメモを書き記すのに使う。
+    note: HashMap<NoteTag, Note>,
+}
+struct Note {
+    title: String, // ノートのタイトルを表す
+    data: String,  // ノートの内容を表す
+}
+struct Message {
+    from: Character,                     // 誰からのメッセージか
+    to: Character,                       // 誰に向けたメッセージか
+    date: chrono::DateTime<chrono::Utc>, // いつメッセージが送信されたかを表す
+    text: String,                        // メッセージの内容
+}
+enum Character {
+    Agent, // AI自身を表す
+    User,  // AIを使用しているユーザーを表す
+    Cmd,   // AIが使用するコマンドラインからの出力であることを表す
+}
