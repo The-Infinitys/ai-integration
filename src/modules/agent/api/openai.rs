@@ -36,6 +36,14 @@ impl OpenAIApi {
             model: model.into(),
         }
     }
+    pub fn local(model: impl Into<String>) -> Self {
+        Self {
+            client: Client::new(),
+            api_key: "".into(),
+            base_url: "https://localhost:11434/v1/chat/completions".to_string(),
+            model: model.into(),
+        }
+    }
 
     /// Attempts to create an `OpenAIApi` instance by detecting available Ollama models.
     /// Ollamaで利用可能なモデルを検出して `OpenAIApi` インスタンスを作成しようとします。
@@ -54,8 +62,7 @@ impl OpenAIApi {
                     if let Some(first_model_line) = lines.next() {
                         if let Some(model_name) = first_model_line.split_whitespace().next() {
                             println!("[INFO] Detected Ollama model: '{}'. Using it for default.", model_name);
-                            return Self::new(
-                                "".to_string(),
+                            return Self::local(
                                 model_name.to_string(),
                             );
                         }
