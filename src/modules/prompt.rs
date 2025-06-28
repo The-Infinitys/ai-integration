@@ -1,37 +1,70 @@
 // src/modules/prompt.rs
 
-/// Represents a prompt for the AI agent.
-/// AIエージェントへのプロンプトを表します。
-pub struct Prompt {
-    pub system_message: String,
-    pub user_message: String,
+use std::io::{self, Write};
+use futures::stream::BoxStream;
+use futures::StreamExt; // For StreamExt::next().await
+
+/// Reads a line of input from the user.
+/// ユーザーから1行の入力を読み取ります。
+pub fn read_user_input() -> Result<String, String> {
+    print!("\nUser Input: ");
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut user_input = String::new();
+    io::stdin().read_line(&mut user_input).map_err(|e| e.to_string())?;
+    Ok(user_input.trim().to_string())
 }
 
-impl Prompt {
-    /// Creates a new `Prompt` instance.
-    /// 新しい `Prompt` インスタンスを作成します。
-    pub fn new(system: impl Into<String>, user: impl Into<String>) -> Self {
-        Self {
-            system_message: system.into(),
-            user_message: user.into(),
+/// Prints a streaming response from the AI to the console.
+/// AIからのストリーミング応答をコンソールに出力します。
+pub async fn print_ai_streaming_response(mut stream: BoxStream<'static, Result<String, String>>) -> Result<String, String> {
+    let mut accumulated_response = String::new();
+    print!("[AI Response] (streaming): "); // Indicates AI's response start
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+
+    while let Some(chunk_result) = stream.next().await {
+        match chunk_result {
+            Ok(chunk) => {
+                print!("{}", chunk);
+                std::io::stdout().flush().map_err(|e| e.to_string())?;
+                accumulated_response.push_str(&chunk);
+            }
+            Err(e) => {
+                eprintln!("\nError during AI streaming: {}", e);
+                accumulated_response.push_str(&format!("\nError: {}", e));
+                return Err(format!("AI streaming error: {}", e));
+            }
         }
     }
+    println!(); // Newline after streaming
+    Ok(accumulated_response.trim().to_string())
+}
 
-    /// Generates the full prompt string by combining system and user messages.
-    /// システムメッセージとユーザーメッセージを組み合わせて完全なプロンプト文字列を生成します。
-    pub fn generate_full_prompt(&self) -> String {
-        format!("System: {}\nUser: {}", self.system_message, self.user_message)
-    }
+/// Prints a general informational message.
+/// 一般的な情報メッセージを出力します。
+pub fn print_info(message: &str) {
+    println!("{}", message);
+}
 
-    /// Updates the system message.
-    /// システムメッセージを更新します。
-    pub fn set_system_message(&mut self, message: impl Into<String>) {
-        self.system_message = message.into();
-    }
+/// Prints an AuraScript command output.
+/// AuraScriptコマンドの出力を出力します。
+pub fn print_aurascript_output(output: &str) {
+    println!("[AuraScript Output]:\n{}", output);
+}
 
-    /// Updates the user message.
-    /// ユーザーメッセージを更新します。
-    pub fn set_user_message(&mut self, message: impl Into<String>) {
-        self.user_message = message.into();
-    }
+/// Prints a tool output.
+/// ツールの出力を出力します。
+pub fn print_tool_output(output: &str) {
+    println!("[Tool Output]:\n{}", output);
+}
+
+/// Prints an error message.
+/// エラーメッセージを出力します。
+pub fn print_error(message: &str) {
+    eprintln!("[ERROR] {}", message);
+}
+
+/// Prints a configuration message.
+/// 設定メッセージを出力します。
+pub fn print_config(message: &str) {
+    println!("[CONFIG] {}", message);
 }

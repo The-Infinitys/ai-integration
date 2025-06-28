@@ -1,12 +1,11 @@
 // src/modules/agent/api/openai.rs
+use async_trait::async_trait;
+use bytes::BytesMut;
+use futures::stream::{BoxStream, StreamExt, TryStreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use async_trait::async_trait;
-use std::collections::HashMap;
-use tokio::process::Command;
 use std::str;
-use futures::stream::{self, BoxStream, StreamExt, TryStreamExt};
-use bytes::BytesMut;
+use tokio::process::Command;
 
 use super::AiService;
 
@@ -53,10 +52,7 @@ impl OpenAIApi {
     /// Ollamaで利用可能なモデルを検出して `OpenAIApi` インスタンスを作成しようとします。
     pub async fn new_from_ollama_list() -> Self {
         println!("[INFO] Attempting to detect Ollama models...");
-        let output = Command::new("ollama")
-            .arg("list")
-            .output()
-            .await;
+        let output = Command::new("ollama").arg("list").output().await;
 
         match output {
             Ok(output) => {
@@ -65,21 +61,32 @@ impl OpenAIApi {
                     let mut lines = stdout.lines().skip(1);
                     if let Some(first_model_line) = lines.next() {
                         if let Some(model_name) = first_model_line.split_whitespace().next() {
-                            println!("[INFO] Detected Ollama model: '{}'. Using it for default.", model_name);
+                            println!(
+                                "[INFO] Detected Ollama model: '{}'. Using it for default.",
+                                model_name
+                            );
                             // Use Self::local with the detected model name
                             return Self::local(model_name.to_string());
                         }
                     }
-                    eprintln!("[WARN] 'ollama list' executed successfully but no models found or parsing failed. Falling back to default 'llama2'.");
+                    eprintln!(
+                        "[WARN] 'ollama list' executed successfully but no models found or parsing failed. Falling back to default 'llama2'."
+                    );
                     Self::default()
                 } else {
-                    eprintln!("[WARN] 'ollama list' command failed with status: {}. Stderr: {}. Falling back to default 'llama2'.",
-                               output.status, str::from_utf8(&output.stderr).unwrap_or(""));
+                    eprintln!(
+                        "[WARN] 'ollama list' command failed with status: {}. Stderr: {}. Falling back to default 'llama2'.",
+                        output.status,
+                        str::from_utf8(&output.stderr).unwrap_or("")
+                    );
                     Self::default()
                 }
             }
             Err(e) => {
-                eprintln!("[WARN] Could not execute 'ollama' command (is Ollama installed and in PATH?): {}. Falling back to default 'llama2'.", e);
+                eprintln!(
+                    "[WARN] Could not execute 'ollama' command (is Ollama installed and in PATH?): {}. Falling back to default 'llama2'.",
+                    e
+                );
                 Self::default()
             }
         }
@@ -101,7 +108,10 @@ impl Default for OpenAIApi {
 impl AiService for OpenAIApi {
     /// Sends messages to the OpenAI Chat Completions API and returns a stream of its response text chunks.
     /// OpenAI Chat Completions API にメッセージを送信し、AI の応答テキストチャンクのストリームを返します。
-    async fn send_messages(&self, messages: Vec<serde_json::Value>) -> Result<BoxStream<'static, Result<String, String>>, String> {
+    async fn send_messages(
+        &self,
+        messages: Vec<serde_json::Value>,
+    ) -> Result<BoxStream<'static, Result<String, String>>, String> {
         // Structs for serializing the request body.
         #[derive(Serialize)]
         struct ChatCompletionRequest {
@@ -118,7 +128,7 @@ impl AiService for OpenAIApi {
 
         #[derive(Deserialize, Debug)]
         struct Choice {
-            index: u32,
+            // index: u32,
             delta: DeltaContent,
             #[serde(default)]
             finish_reason: Option<String>,
@@ -129,6 +139,7 @@ impl AiService for OpenAIApi {
             #[serde(default)]
             content: Option<String>,
             #[serde(default)]
+            #[allow(dead_code)]
             role: Option<String>,
         }
 
@@ -142,7 +153,8 @@ impl AiService for OpenAIApi {
         let mut request_builder = self.client.post(&self.base_url);
 
         if !self.api_key.is_empty() {
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", self.api_key));
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", self.api_key));
         }
 
         let response = request_builder
@@ -153,103 +165,118 @@ impl AiService for OpenAIApi {
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().await.unwrap_or_else(|_| "No response body".to_string());
-            return Err(format!("API returned an error: Status={}, Body={}", status, text));
+            let text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "No response body".to_string());
+            return Err(format!(
+                "API returned an error: Status={}, Body={}",
+                status, text
+            ));
         }
 
-        let mut byte_stream = response.bytes_stream();
+        let byte_stream = response.bytes_stream();
 
         let initial_state = (BytesMut::new(), byte_stream);
 
-        let processed_stream = futures::stream::try_unfold(initial_state, move |(mut buffer, mut byte_stream)| async move {
-            loop {
-                // Debug: Current buffer content
-                // println!("[DEBUG] Current buffer: {:?}", String::from_utf8_lossy(&buffer));
+        let processed_stream = futures::stream::try_unfold(
+            initial_state,
+            move |(mut buffer, mut byte_stream)| async move {
+                loop {
+                    // Debug: Current buffer content
+                    // println!("[DEBUG] Current buffer: {:?}", String::from_utf8_lossy(&buffer));
 
-                // Try to find a complete line in the buffer (looking for `\n` as primary delimiter)
-                // バッファ内で完全な行を見つけようと試みる（主区切り文字として `\n` を探す）
-                if let Some(mut newline_pos) = buffer.iter().position(|&b| b == b'\n') {
-                    // Check if it's a CRLF. If so, include the \r in the split.
-                    // CRLFかどうかをチェック。もしそうなら、\r もスプリットに含める。
-                    let mut line_length = newline_pos + 1; // Length including the '\n'
-                    if newline_pos > 0 && buffer[newline_pos - 1] == b'\r' {
-                        newline_pos -= 1; // Adjust position to start of \r
-                        line_length += 1; // Include \r in the length to remove
-                    }
-                    
-                    let line_bytes = buffer.split_to(line_length); // Split including the newline sequence
-                    let line_str = str::from_utf8(&line_bytes).map_err(|e| format!("Invalid UTF-8 in stream: {}", e))?.trim();
+                    // Try to find a complete line in the buffer (looking for `\n` as primary delimiter)
+                    // バッファ内で完全な行を見つけようと試みる（主区切り文字として `\n` を探す）
+                    if let Some(mut _newline_pos) = buffer.iter().position(|&b| b == b'\n') {
+                        // Check if it's a CRLF. If so, include the \r in the split.
+                        // CRLFかどうかをチェック。もしそうなら、\r もスプリットに含める。
+                        let mut line_length = _newline_pos + 1; // Length including the '\n'
+                        if _newline_pos > 0 && buffer[_newline_pos - 1] == b'\r' {
+                            _newline_pos -= 1; // Adjust position to start of \r
+                            line_length += 1; // Include \r in the length to remove
+                        }
 
-                    // Debug: Parsed line string
-                    // println!("[DEBUG] Parsed line: \"{}\"", line_str);
+                        let line_bytes = buffer.split_to(line_length); // Split including the newline sequence
+                        let line_str = str::from_utf8(&line_bytes)
+                            .map_err(|e| format!("Invalid UTF-8 in stream: {}", e))?
+                            .trim();
 
-                    if line_str.starts_with("data: ") {
-                        let json_str = &line_str[6..];
-                        // Debug: JSON string to parse
-                        // println!("[DEBUG] JSON string to parse: \"{}\"", json_str);
+                        // Debug: Parsed line string
+                        // println!("[DEBUG] Parsed line: \"{}\"", line_str);
 
-                        if json_str == "[DONE]" {
-                            // Debug: [DONE] received
-                            // println!("[DEBUG] [DONE] received. Terminating stream.");
-                            return Ok(None); // This terminates the stream
-                        } else {
-                            match serde_json::from_str::<ChatCompletionChunk>(json_str) {
-                                Ok(chunk) => {
-                                    if let Some(choice) = chunk.choices.into_iter().next() {
-                                        if let Some(content) = choice.delta.content {
-                                            // Debug: Content found
-                                            // println!("[DEBUG] Content found: \"{}\"", content);
-                                            // Return the content as Ok(String) and continue with the remaining state
-                                            return Ok(Some((content, (buffer, byte_stream))));
-                                        } else if choice.finish_reason.is_some() {
-                                            // Debug: Finish reason without content
-                                            // println!("[DEBUG] Finish reason without content. Terminating stream cleanly.");
-                                            // No content but a finish reason means this is likely the last chunk
-                                            return Ok(None); // Terminate the stream cleanly
+                        if line_str.starts_with("data: ") {
+                            let json_str = &line_str[6..];
+                            // Debug: JSON string to parse
+                            // println!("[DEBUG] JSON string to parse: \"{}\"", json_str);
+
+                            if json_str == "[DONE]" {
+                                // Debug: [DONE] received
+                                // println!("[DEBUG] [DONE] received. Terminating stream.");
+                                return Ok(None); // This terminates the stream
+                            } else {
+                                match serde_json::from_str::<ChatCompletionChunk>(json_str) {
+                                    Ok(chunk) => {
+                                        if let Some(choice) = chunk.choices.into_iter().next() {
+                                            if let Some(content) = choice.delta.content {
+                                                // Debug: Content found
+                                                // println!("[DEBUG] Content found: \"{}\"", content);
+                                                // Return the content as Ok(String) and continue with the remaining state
+                                                return Ok(Some((content, (buffer, byte_stream))));
+                                            } else if choice.finish_reason.is_some() {
+                                                // Debug: Finish reason without content
+                                                // println!("[DEBUG] Finish reason without content. Terminating stream cleanly.");
+                                                // No content but a finish reason means this is likely the last chunk
+                                                return Ok(None); // Terminate the stream cleanly
+                                            } else {
+                                                // Debug: No content, no finish reason. Continue processing buffer.
+                                                // println!("[DEBUG] No content, no finish_reason. Continuing...");
+                                                // No content and no finish_reason, just continue to next line/chunk
+                                                continue;
+                                            }
                                         } else {
-                                            // Debug: No content, no finish reason. Continue processing buffer.
-                                            // println!("[DEBUG] No content, no finish_reason. Continuing...");
-                                            // No content and no finish_reason, just continue to next line/chunk
+                                            // Debug: No choices in chunk. Continue processing buffer.
+                                            // println!("[DEBUG] No choices in chunk. Continuing...");
+                                            // No choices or first choice is empty, continue processing buffer
                                             continue;
                                         }
-                                    } else {
-                                        // Debug: No choices in chunk. Continue processing buffer.
-                                        // println!("[DEBUG] No choices in chunk. Continuing...");
-                                        // No choices or first choice is empty, continue processing buffer
-                                        continue;
                                     }
-                                }
-                                Err(e) => {
-                                    eprintln!("Failed to parse JSON chunk: {} (Line: {})", e, json_str);
-                                    return Err(format!("Failed to parse JSON chunk: {}", e));
+                                    Err(e) => {
+                                        eprintln!(
+                                            "Failed to parse JSON chunk: {} (Line: {})",
+                                            e, json_str
+                                        );
+                                        return Err(format!("Failed to parse JSON chunk: {}", e));
+                                    }
                                 }
                             }
                         }
-                    }
-                    // If it's not a data line, continue loop to process more lines in buffer
-                    // データ行でない場合、バッファ内のさらに多くの行を処理するためにループを続行
-                    // println!("[DEBUG] Non-data line or unrecognized. Continuing...");
-                    continue; // Process next line in buffer
-                } else {
-                    // No complete line in buffer, try to read more from the underlying byte_stream
-                    // バッファに完全な行がないため、基になる byte_stream からさらに読み込もうと試みる
-                    // println!("[DEBUG] No complete line in buffer. Reading more from byte_stream...");
-                    match byte_stream.next().await {
-                        Some(chunk_result) => {
-                            let chunk = chunk_result.map_err(|e| format!("Error reading stream chunk: {}", e))?;
-                            // Debug: Bytes read from stream
-                            // println!("[DEBUG] Read {} bytes from stream. Adding to buffer.", chunk.len());
-                            buffer.extend_from_slice(&chunk); // Add new bytes to buffer
-                        }
-                        None => {
-                            // End of underlying byte stream, and no more complete lines in buffer
-                            // println!("[DEBUG] End of byte_stream. Terminating stream.");
-                            return Ok(None); // Terminate the stream
+                        // If it's not a data line, continue loop to process more lines in buffer
+                        // データ行でない場合、バッファ内のさらに多くの行を処理するためにループを続行
+                        // println!("[DEBUG] Non-data line or unrecognized. Continuing...");
+                        continue; // Process next line in buffer
+                    } else {
+                        // No complete line in buffer, try to read more from the underlying byte_stream
+                        // バッファに完全な行がないため、基になる byte_stream からさらに読み込もうと試みる
+                        // println!("[DEBUG] No complete line in buffer. Reading more from byte_stream...");
+                        match byte_stream.next().await {
+                            Some(chunk_result) => {
+                                let chunk = chunk_result
+                                    .map_err(|e| format!("Error reading stream chunk: {}", e))?;
+                                // Debug: Bytes read from stream
+                                // println!("[DEBUG] Read {} bytes from stream. Adding to buffer.", chunk.len());
+                                buffer.extend_from_slice(&chunk); // Add new bytes to buffer
+                            }
+                            None => {
+                                // End of underlying byte stream, and no more complete lines in buffer
+                                // println!("[DEBUG] End of byte_stream. Terminating stream.");
+                                return Ok(None); // Terminate the stream
+                            }
                         }
                     }
                 }
-            }
-        })
+            },
+        )
         .map_err(|e| e.to_string())
         .boxed();
 
