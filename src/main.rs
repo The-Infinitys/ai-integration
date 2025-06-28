@@ -15,7 +15,7 @@ fn main() -> Result<(), std::io::Error> {
     );
 
     loop {
-        print!("\nUser Input:");
+        print!("\nUser Input: ");
         std::io::stdout().flush()?;
         let mut user_input = String::new();
 
@@ -28,7 +28,7 @@ fn main() -> Result<(), std::io::Error> {
         // Trim whitespace and check for exit command
         // 前後の空白を削除し、終了コマンドをチェック
         let trimmed_input = user_input.trim();
-        if trimmed_input.eq_ignore_ascii_case("exit") {
+        if trimmed_input.eq_ignore_ascii_case("/exit") {
             println!("Exiting AI Agent. Goodbye!");
             break; // Exit the loop
         }
