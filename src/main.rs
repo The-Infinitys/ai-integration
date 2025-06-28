@@ -18,7 +18,7 @@ async fn main() -> Result<(), std::io::Error> {
     let ollama_api_candidate = OpenAIApi::new_from_ollama_list().await;
 
     // Define the system prompt string. This will be used for both new() and default().
-    let system_prompt_for_ai = include_str!("test-prompt.txt");
+    let system_prompt_for_ai = include_str!("default-prompt.md");
 
 
     if ollama_api_candidate.model == "llama2" && ollama_api_candidate.base_url == "http://localhost:11434/v1/chat/completions" {

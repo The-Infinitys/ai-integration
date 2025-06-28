@@ -3,9 +3,9 @@ pub mod api;
 // Removed AiService and ApiClient as they are not directly used in AIAgent's module top level
 use api::AIApi;
 use chrono::{self, Utc};
-use std::collections::HashMap;
-use futures::stream::BoxStream;
 use futures::StreamExt;
+use futures::stream::BoxStream;
+use std::collections::HashMap;
 use std::io::Write; // Write for .flush()
 
 use crate::modules::aurascript::AuraScriptRunner;
@@ -76,7 +76,10 @@ impl AIAgent {
         can_execute_aurascript: bool,
     ) -> Self {
         let mut system_map = HashMap::new();
-        system_map.insert("main_system_prompt".to_string(), initial_system_prompt.into());
+        system_map.insert(
+            "main_system_prompt".to_string(),
+            initial_system_prompt.into(),
+        );
 
         AIAgent {
             system: system_map,
@@ -117,7 +120,8 @@ impl AIAgent {
     }
 
     pub fn update_main_system_prompt(&mut self, new_prompt: impl Into<String>) {
-        self.system.insert("main_system_prompt".to_string(), new_prompt.into());
+        self.system
+            .insert("main_system_prompt".to_string(), new_prompt.into());
     }
 
     /// Sets whether the agent can execute AuraScript commands autonomously.
@@ -128,7 +132,9 @@ impl AIAgent {
 
     /// Sends the current chat history (and system prompt) to the AI API and returns a stream of its response chunks.
     /// 現在のチャット履歴（およびシステムプロンプト）をAI APIに送信し、AIの応答チャンクのストリームを返します。
-    pub async fn get_ai_response_stream(&self) -> Result<BoxStream<'static, Result<String, String>>, String> {
+    pub async fn get_ai_response_stream(
+        &self,
+    ) -> Result<BoxStream<'static, Result<String, String>>, String> {
         let mut messages: Vec<serde_json::Value> = Vec::new();
 
         if let Some(system_msg) = self.get_main_system_prompt() {
@@ -155,7 +161,11 @@ impl AIAgent {
             }));
         }
 
-        self.api.client.as_ai_service().send_messages(messages).await
+        self.api
+            .client
+            .as_ai_service()
+            .send_messages(messages)
+            .await
     }
 
     /// Processes a user's input and drives the AI's "think-act-observe" loop.
@@ -163,7 +173,10 @@ impl AIAgent {
     /// This method will interact with the AI, potentially execute commands,
     /// and continue looping until the AI provides a final (non-command) response.
     /// Returns the final AI response string.
-    pub async fn process_user_input_and_react(&mut self, user_input: &str) -> Result<String, String> {
+    pub async fn process_user_input_and_react(
+        &mut self,
+        user_input: &str,
+    ) -> Result<String, String> {
         // Add initial user input to chat history
         self.add_message(Character::User, Character::Agent, user_input);
 
@@ -174,7 +187,10 @@ impl AIAgent {
         loop {
             loop_count += 1;
             if loop_count > MAX_LOOP_ITERATIONS {
-                let err_msg = format!("AI reached max loop iterations ({}). Terminating.", MAX_LOOP_ITERATIONS);
+                let err_msg = format!(
+                    "AI reached max loop iterations ({}). Terminating.",
+                    MAX_LOOP_ITERATIONS
+                );
                 eprintln!("[AI Loop Error]: {}", err_msg);
                 self.add_message(Character::Agent, Character::User, &err_msg);
                 return Err(err_msg);
@@ -182,8 +198,20 @@ impl AIAgent {
 
             // Display AI's thinking process to user
             println!("\n[AI Thinking] Sending chat history to AI...");
-            println!("  Model: {}", self.api.config.get("model").unwrap_or(&"unknown".to_string()));
-            println!("  Base URL: {}", self.api.config.get("base_url").unwrap_or(&"unknown".to_string()));
+            println!(
+                "  Model: {}",
+                self.api
+                    .config
+                    .get("model")
+                    .unwrap_or(&"unknown".to_string())
+            );
+            println!(
+                "  Base URL: {}",
+                self.api
+                    .config
+                    .get("base_url")
+                    .unwrap_or(&"unknown".to_string())
+            );
 
             let ai_response_stream_result = self.get_ai_response_stream().await;
 
@@ -216,97 +244,120 @@ impl AIAgent {
                 }
             };
 
-            // 2. Analyze AI's response for tagged AuraScript commands
-            let mut command_blocks_executed = false;
-            let mut current_pos = 0; // Fix: Initialize current_pos here.
-            let start_tag = "<aurascript>";
-            let end_tag = "</aurascript>";
-
-            if self.can_execute_aurascript {
-                // Check for existence of any aurascript tags
-                if full_ai_response.contains(start_tag) && full_ai_response.contains(end_tag) {
-                    while let Some(start_tag_idx) = full_ai_response[current_pos..].find(start_tag) {
-                        let content_start = current_pos + start_tag_idx + start_tag.len();
-                        if let Some(end_tag_idx) = full_ai_response[content_start..].find(end_tag) {
-                            let block_end_absolute_idx = content_start + end_tag_idx; // Absolute index of end tag start
-                            let aurascript_content = &full_ai_response[content_start..block_end_absolute_idx];
-
-                            // Log any text before the aurascript block as AI's thought
-                            let pre_aurascript_text = &full_ai_response[current_pos..(current_pos + start_tag_idx)];
-                            if !pre_aurascript_text.trim().is_empty() {
-                                println!("[AI Thought]: {}", pre_aurascript_text.trim());
-                                self.add_message(Character::Agent, Character::User, pre_aurascript_text.trim());
-                            }
-
-                            println!("[AI Action] Detected AuraScript block:");
-                            // No need to print the raw content, just indicate its presence
-                            // self.add_message(Character::Agent, Character::Cmd, aurascript_content); // Log the block itself if needed
-
-                            let commands: Vec<&str> = aurascript_content.lines()
-                                                        .filter(|line| !line.trim().is_empty())
-                                                        .collect();
-
+            // 新しい判定方式: USER: で始まる→ユーザー応答, COMMAND: で始まる→AuraScriptコマンド実行
+            let trimmed = full_ai_response.trim_start();
+            // USER: または COMMAND: の位置を探す
+            let user_idx = trimmed.find("USER:");
+            let cmd_idx = trimmed.find("COMMAND:");
+            match (user_idx, cmd_idx) {
+                (Some(u), Some(c)) => {
+                    if u < c {
+                        // USER: が先
+                        let user_content = &trimmed[u + 5..];
+                        let final_response_text = user_content.trim().to_string();
+                        self.add_message(Character::Agent, Character::User, &final_response_text);
+                        println!("\nAI Final Response: {}", final_response_text);
+                        return Ok(final_response_text);
+                    } else {
+                        // COMMAND: が先
+                        if self.can_execute_aurascript {
+                            let cmd_content = &trimmed[c + 8..];
+                            let commands: Vec<&str> = cmd_content
+                                .lines()
+                                .map(|line| line.trim())
+                                .filter(|line| !line.is_empty())
+                                .collect();
                             if commands.is_empty() {
-                                eprintln!("[Tool Error]: AuraScript block was empty. Continuing AI loop.");
-                                self.add_message(Character::Cmd, Character::Agent, "Error: AuraScript block was empty.");
-                                current_pos = block_end_absolute_idx + end_tag.len();
-                                continue;
+                                let error_msg = "[Tool Error]: COMMAND: ブロックが空です。コマンドを1行ずつ記述してください。";
+                                eprintln!("{}", error_msg);
+                                self.add_message(Character::Cmd, Character::Agent, error_msg);
+                                return Err(error_msg.to_string());
                             }
-
-                            // Execute each command within the block
                             for command_line in commands {
                                 println!("[Tool Execution] Running command: \"{}\"", command_line);
-                                self.add_message(Character::Agent, Character::Cmd, command_line); // Log individual command
+                                self.add_message(Character::Agent, Character::Cmd, command_line);
                                 match self.aurascript_runner.run_script(command_line).await {
                                     Ok(script_output) => {
                                         println!("[Tool Output]:\n{}", script_output);
                                         self.add_message(Character::Cmd, Character::Agent, &script_output);
-                                        command_blocks_executed = true;
                                     }
                                     Err(e) => {
                                         eprintln!("[Tool Error]: {}", e);
-                                        self.add_message(Character::Cmd, Character::Agent, format!("Error executing AI-generated command '{}': {}", command_line, e));
-                                        command_blocks_executed = true;
+                                        self.add_message(
+                                            Character::Cmd,
+                                            Character::Agent,
+                                            format!(
+                                                "Error executing AI-generated command '{}': {}",
+                                                command_line, e
+                                            ),
+                                        );
                                     }
                                 }
                             }
-                            current_pos = block_end_absolute_idx + end_tag.len();
+                            continue;
                         } else {
-                            eprintln!("[AI Action] Warning: Found '{}' tag but no closing '{}' tag. Treating remaining response as final.", start_tag, end_tag);
-                            command_blocks_executed = false;
-                            break; // Exit loop, treat full_ai_response (from current_pos onwards) as final
+                            let error_msg = "[Permission Error]: AuraScriptコマンドの自動実行は許可されていません。";
+                            eprintln!("{}", error_msg);
+                            self.add_message(Character::Agent, Character::User, error_msg);
+                            return Err(error_msg.to_string());
                         }
                     }
-                } else {
-                    // No aurascript tags found at all.
-                    // If AI has any non-command text, log it as final response.
-                    command_blocks_executed = false;
                 }
-            }
-
-
-            if command_blocks_executed {
-                // If any command block was executed, loop again to let AI respond to the new context.
-                continue;
-            } else {
-                // No command blocks executed in this turn, or execution not allowed.
-                // Treat the remaining AI response (if any) as a final message to the user.
-                let final_ai_response_part = &full_ai_response[current_pos..].trim();
-
-                if let Some(stripped)= final_ai_response_part.strip_prefix("USER:") {
-                    let final_response_text = stripped.trim().to_string();
+                (Some(u), None) => {
+                    let user_content = &trimmed[u + 5..];
+                    let final_response_text = user_content.trim().to_string();
                     self.add_message(Character::Agent, Character::User, &final_response_text);
                     println!("\nAI Final Response: {}", final_response_text);
                     return Ok(final_response_text);
-                } else if !final_ai_response_part.is_empty() {
-                    eprintln!("[AI Format Warning] AI did not output a command block or start with 'USER:'. Treating remaining response as final response.");
-                    self.add_message(Character::Agent, Character::User, *final_ai_response_part);
-                    println!("\nAI Final Response: {}", final_ai_response_part);
-                    return Ok(final_ai_response_part.to_string());
-                } else {
-                    eprintln!("[AI Loop Error]: AI did not provide a command or a final response. Terminating to prevent infinite loop.");
-                    self.add_message(Character::Agent, Character::User, "Error: AI did not provide a command or a final response. Terminating.");
-                    return Err("AI did not provide a command or a final response.".to_string());
+                }
+                (None, Some(c)) => {
+                    if self.can_execute_aurascript {
+                        let cmd_content = &trimmed[c + 8..];
+                        let commands: Vec<&str> = cmd_content
+                            .lines()
+                            .map(|line| line.trim())
+                            .filter(|line| !line.is_empty())
+                            .collect();
+                        if commands.is_empty() {
+                            let error_msg = "[Tool Error]: COMMAND: ブロックが空です。コマンドを1行ずつ記述してください。";
+                            eprintln!("{}", error_msg);
+                            self.add_message(Character::Cmd, Character::Agent, error_msg);
+                            return Err(error_msg.to_string());
+                        }
+                        for command_line in commands {
+                            println!("[Tool Execution] Running command: \"{}\"", command_line);
+                            self.add_message(Character::Agent, Character::Cmd, command_line);
+                            match self.aurascript_runner.run_script(command_line).await {
+                                Ok(script_output) => {
+                                    println!("[Tool Output]:\n{}", script_output);
+                                    self.add_message(Character::Cmd, Character::Agent, &script_output);
+                                }
+                                Err(e) => {
+                                    eprintln!("[Tool Error]: {}", e);
+                                    self.add_message(
+                                        Character::Cmd,
+                                        Character::Agent,
+                                        format!(
+                                            "Error executing AI-generated command '{}': {}",
+                                            command_line, e
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                        continue;
+                    } else {
+                        let error_msg = "[Permission Error]: AuraScriptコマンドの自動実行は許可されていません。";
+                        eprintln!("{}", error_msg);
+                        self.add_message(Character::Agent, Character::User, error_msg);
+                        return Err(error_msg.to_string());
+                    }
+                }
+                (None, None) => {
+                    let error_msg = "[AI Format Warning] AIの出力はUSER:またはCOMMAND:で始めてください。";
+                    eprintln!("{}", error_msg);
+                    self.add_message(Character::Agent, Character::User, error_msg);
+                    return Err(error_msg.to_string());
                 }
             }
         }
@@ -318,46 +369,7 @@ impl Default for AIAgent {
         let mut system_map = HashMap::new();
         system_map.insert(
             "main_system_prompt".to_string(),
-            r#"あなたはAIアシスタントです。ユーザーの質問に簡潔に答えます。
-あなたの目標は、ユーザーの要求を理解し、必要に応じてツールを利用して、最終的な回答を提供することです。
-あなたは「思考 (Thought)」、「行動 (Action)」、「観察 (Observation)」のループで動作します。
-
-**思考のステップ (Thought):**
-ユーザーの要求を分析し、最も適切な次のステップを決定します。
-利用可能なツール（AuraScriptコマンド）が、あなたの知識だけでは答えられない、または情報を確認する必要がある場合に役立つかどうか判断します。
-ツールが必要ない場合、直接ユーザーに最終応答を生成します。
-
-**行動のステップ (Action):**
-AuraScriptコマンドを実行する場合は、**必ずコマンドをXMLタグ `<aurascript>` と `</aurascript>` で囲んでください。**
-これらのタグの間に、`!` で始まるシェルコマンド（例: `!ls -l`）または `/` で始まるカスタムツール（例: `/web_search Rust programming`）を1行に1つずつ記述できます。
-**重要:** `<aurascript>...</aurascript>` ブロックを生成したら、**その直後に他のテキストや思考を続けないでください。** システムがコマンドを実行し、その結果をあなたに提供するまで待機します。
-
-現在利用可能なカスタムツール: `echo [テキスト]`, `web_search [クエリ]`
-
-**ユーザーに直接応答する場合:**
-あなたの応答はユーザーに向けられます。**応答の前に `USER: ` と明確に書いてください。** これがあなたの「行動」の最終ステップであり、推論ループを終了します。
-
-**観察のステップ (Observation):**
-あなたがコマンドブロックを出力した後、システムはその中のコマンドを順番に実行し、それぞれの出力がチャット履歴の「Command Output:」というプレフィックスを持つシステムメッセージとしてあなたに提供されます。あなたはこれを受け取り、次の思考と行動を決定します。
-
-**例（思考-行動-観察ループのログ）:**
-ユーザー: Rustの現在の安定版のバージョンは何ですか？
-
-AIの思考: Rustの現在の安定版バージョンを知るにはウェブ検索が必要だ。
-AIの行動:
-<aurascript>
-/web_search Rust current stable version
-</aurascript>
-
-(システムがコマンドを実行し、チャット履歴に結果を追加)
-Command Output: Web search results for 'Rust current stable version': Rust 1.79.0 (stable) released on 2024-06-13.
-
-AIの思考: ウェブ検索結果からRustの現在の安定版バージョンが分かった。これをユーザーに伝えることができる。
-AIの行動: USER: Rustの現在の安定版バージョンは 1.79.0 です。
-
-不明な点がある場合、またはコマンドの実行結果が不十分な場合は、さらにツールを実行するか、明確な質問をして情報を集めてください。
-"#
-            .to_string(),
+            include_str!("../default-prompt.md").to_string(),
         );
 
         let chat_history = Vec::new();
