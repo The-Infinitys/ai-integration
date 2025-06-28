@@ -12,49 +12,26 @@ use tokio; // async mainのためにtokioをインポート
 async fn main() -> Result<(), std::io::Error> {
     println!("Hello from AI Agent project!");
     println!("Type your message and press Enter. Type '/exit' to quit.");
-    println!("\n--- AI Agent Initialization ---");
-
-    // Attempt to create OpenAI API client by detecting Ollama models.
-    // Ollamaモデルを検出してOpenAI APIクライアントを作成しようとします。
-    // This will call 'ollama list' and use the first detected model,
-    // or fall back to OpenAIApi::default() if detection fails.
-    // これにより、「ollama list」が呼び出され、検出された最初のモデルが使用されます。
-    // 検出に失敗した場合は、OpenAIApi::default() にフォールバックします。
-    let openai_client = OpenAIApi::new_from_ollama_list().await;
-
-    println!("  Using API Base URL: {}", openai_client.base_url);
-    println!("  Using Model: {}", openai_client.model);
-    println!("-------------------------------");
+    println!("\n--- AI Agent Initialization (Using Default Localhost Settings) ---");
+    println!("  Attempting to connect to Ollama at: http://localhost:11434/v1/chat/completions");
+    println!("  Using default model: llama2");
+    println!("\n--- IMPORTANT ---");
+    println!("  Please ensure Ollama is running and you have downloaded the 'llama2' model (or another model).");
+    println!("  (e.g., Run 'ollama serve' in one terminal, and 'ollama run llama2' in another to pull the model).");
+    println!("------------------------------------------");
     println!("Try commands like 'note test', 'get test note', or 'history' for demonstration.");
 
 
-    // Wrap the OpenAI client in ApiClient enum.
-    // OpenAIクライアントをApiClient enumでラップします。
-    let mut api = AIApi::new(ApiClient::OpenAI(openai_client));
-    // Store the detected/default model and base_url in AIApi's config for easy access/logging.
-    // 検出された/デフォルトのモデルとbase_urlをAIApiの設定に保存し、アクセス/ロギングを容易にします。
-    api.add_config(
-        "model".to_string(),
-        match &api.client {
-            ApiClient::OpenAI(o) => o.model.clone(),
-        }
-    );
-    api.add_config(
-        "base_url".to_string(),
-        match &api.client {
-            ApiClient::OpenAI(o) => o.base_url.clone(),
-        }
-    );
+    // Create an AIAgent instance using the default configuration.
+    // This will directly use AIApi::default(), which in turn uses OpenAIApi::default()
+    // pointing to http://localhost:11434/v1/chat/completions with "llama2" model.
+    // デフォルト設定を使用してAIAgentインスタンスを作成します。
+    // これにより、AIApi::default()が直接使用され、
+    // それはOpenAIApi::default()を使用して"llama2"モデルのhttp://localhost:11434/v1/chat/completionsを指します。
+    let mut agent = AIAgent::default();
 
-    // Create an AIAgent instance with the API configuration and an initial system prompt.
-    // API設定と初期システムプロンプトを持つAIAgentインスタンスを作成します。
-    let mut agent = AIAgent::new(
-        api,
-        "You are a helpful AI assistant. Respond concisely and avoid using external commands unless explicitly asked.".to_string(), // AIエージェントの役割
-    );
-
-    // Initial system prompt display (optional, moved here for clarity)
-    // 初期システムプロンプトの表示（オプション、明確化のためにここに移動）
+    // Initial system prompt display
+    // 初期システムプロンプトの表示
     if let Some(main_prompt) = agent.get_main_system_prompt() {
         println!("\nAgent's Initial System Prompt: {}", main_prompt);
     }

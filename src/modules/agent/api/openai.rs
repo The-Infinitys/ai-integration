@@ -23,8 +23,9 @@ impl OpenAIApi {
     /// 新しい `OpenAIApi` インスタンスを作成します。
     ///
     /// # Arguments
-    /// * `api_key` - Your OpenAI API key. あなたのOpenAI APIキー。
-    /// * `model` - The name of the OpenAI model to use (e.g., "gpt-3.5-turbo", "gpt-4"). 使用するOpenAIモデルの名前（例： "gpt-3.5-turbo"、 "gpt-4"）。
+    /// * `api_key` - Your OpenAI API key. Empty string means no Authorization header will be sent.
+    ///             あなたのOpenAI APIキー。空文字列の場合、Authorizationヘッダーは送信されません。
+    /// * `model` - The name of the OpenAI model to use (e.g., "gpt-3.5-turbo", "gpt-4"). 使用する特定のOpenAIモデル（例： "gpt-3.5-turbo"、 "gpt-4"）。
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             client: Client::new(),
@@ -58,7 +59,7 @@ impl OpenAIApi {
                         if let Some(model_name) = first_model_line.split_whitespace().next() {
                             println!("[INFO] Detected Ollama model: '{}'. Using it for default.", model_name);
                             return Self::new(
-                                "sk-DUMMY_KEY_FOR_LOCAL_USE", // API key not typically needed for local Ollama, but included for API compatibility
+                                "".to_string(), // No API key needed for local Ollama
                                 model_name.to_string(),
                             );
                         }
@@ -85,24 +86,43 @@ impl Default for OpenAIApi {
     fn default() -> Self {
         Self {
             client: Client::new(),
-            api_key: "sk-DUMMY_KEY_FOR_LOCAL_USE".to_string(), // A dummy key, often not needed for local LLMs
+            api_key: "".to_string(), // Default to an empty API key (no header sent)
             base_url: "http://localhost:11434/v1/chat/completions".to_string(), // Default for Ollama etc.
             model: "llama2".to_string(), // Common default model for local LLMs via Ollama
         }
     }
 }
 
-// ... (AiService impl remains the same)
+/// Implement the `AiService` trait for `OpenAIApi` to send messages to OpenAI.
+/// `OpenAIApi` 用に `AiService` トレイトを実装し、OpenAI にメッセージを送信します。
 #[async_trait]
 impl AiService for OpenAIApi {
+    /// Sends messages to the OpenAI Chat Completions API and returns the AI's response content.
+    /// OpenAI Chat Completions API にメッセージを送信し、AI の応答コンテンツを返します。
+    ///
+    /// The `messages` vector should be an array of JSON objects, typically in the format:
+    /// `{"role": "system", "content": "..."}`
+    /// `{"role": "user", "content": "..."}`
+    /// `{"role": "assistant", "content": "..."}`
+    /// `messages` ベクターは、通常以下の形式のJSONオブジェクトの配列である必要があります。
+    /// `{"role": "system", "content": "..."}`
+    /// `{"role": "user", "content": "..."}`
+    /// `{"role": "assistant", "content": "..."}`
+    ///
+    /// # Returns
+    /// * `Ok(String)`: The content of the AI's response message. AIの応答メッセージのコンテンツ。
+    /// * `Err(String)`: An error message if the API call fails or the response is invalid. API呼び出しが失敗した場合、または応答が無効な場合のエラーメッセージ。
     async fn send_messages(&self, messages: Vec<serde_json::Value>) -> Result<String, String> {
-        // ... (implementation remains the same)
+        // Structs for serializing the request body.
+        // リクエストボディをシリアライズするための構造体。
         #[derive(Serialize)]
         struct ChatCompletionRequest {
             model: String,
             messages: Vec<serde_json::Value>,
         }
 
+        // Structs for deserializing the response body from OpenAI.
+        // OpenAI からの応答ボディをデシリアライズするための構造体。
         #[derive(Deserialize)]
         struct ChatCompletionResponse {
             choices: Vec<Choice>,
@@ -118,33 +138,51 @@ impl AiService for OpenAIApi {
             content: String,
         }
 
+        // Build the request body.
+        // リクエストボディを構築。
         let request_body = ChatCompletionRequest {
             model: self.model.clone(),
             messages,
         };
 
-        let response = self.client
-            .post(&self.base_url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request_body)
+        // Create the request builder.
+        // リクエストビルダーを作成。
+        let mut request_builder = self.client.post(&self.base_url);
+
+        // ONLY add Authorization header if api_key is not empty.
+        // api_keyが空でない場合にのみAuthorizationヘッダーを追加。
+        if !self.api_key.is_empty() {
+            request_builder = request_builder.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+
+        // Send the HTTP POST request to OpenAI.
+        // OpenAI に HTTP POST リクエストを送信。
+        let response = request_builder
+            .json(&request_body) // Serialize request_body to JSON and set as body. request_body を JSON にシリアライズしてボディとして設定。
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(|e| format!("Request failed: {}", e))?; // Handle network or request building errors. ネットワークまたはリクエスト構築エラーを処理。
 
+        // Check if the response status is successful.
+        // 応答ステータスが成功しているかチェック。
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_else(|_| "No response body".to_string());
             return Err(format!("API returned an error: Status={}, Body={}", status, text));
         }
 
+        // Parse the successful response body.
+        // 成功した応答ボディをパース。
         let response_body: ChatCompletionResponse = response
             .json()
             .await
-            .map_err(|e| format!("Failed to parse response JSON: {}", e))?;
+            .map_err(|e| format!("Failed to parse response JSON: {}", e))?; // Handle JSON parsing errors. JSONパースエラーを処理。
 
+        // Extract the content from the first choice.
+        // 最初の選択肢からコンテンツを抽出。
         response_body.choices.into_iter()
-            .next()
-            .map(|choice| choice.message.content)
-            .ok_or_else(|| "No choices found in AI response".to_string())
+            .next() // Get the first choice. 最初の選択肢を取得。
+            .map(|choice| choice.message.content) // Get the content from the message. メッセージからコンテンツを取得。
+            .ok_or_else(|| "No choices found in AI response".to_string()) // Handle cases where no choices are returned. 選択肢が返されないケースを処理。
     }
 }
