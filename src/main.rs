@@ -28,7 +28,7 @@ async fn main() -> Result<(), std::io::Error> {
 ツールが必要ない場合、直接ユーザーに最終応答を生成します。
 
 **行動のステップ (Action):**
-AuraScriptコマンドを実行する場合は、コマンドをコードブロック（` ```aurascript\n` で始まり、` ```\n` で終わる）で囲んでください。
+AuraScriptコマンドを実行する場合は、コマンドをコードブロック（`<aurascript>` で始まり、`</aurascript>` で終わる）で囲んでください。
 コードブロックの中には、`!` で始まるシェルコマンド（例: `!ls -l`）または `/` で始まるカスタムツール（例: `/web_search Rust programming`）を1行に1つずつ記述できます。
 現在利用可能なカスタムツール: `echo [テキスト]`, `web_search [クエリ]`
 
