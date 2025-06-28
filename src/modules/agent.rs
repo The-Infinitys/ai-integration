@@ -1,10 +1,12 @@
 // src/modules/agent.rs
 pub mod api;
-// Removed unused ApiClient and AiService from this import as they are not directly used in AIAgent's public API
-use api::AIApi;
+use api::{AIApi, ApiClient}; // ApiClientも必要なので残す
 use chrono::{self, Utc};
 use std::collections::HashMap;
 use futures::stream::BoxStream;
+
+// 新しく AuraScriptRunner をインポート
+use crate::modules::aurascript::AuraScriptRunner;
 
 type NoteTag = Vec<String>;
 
@@ -15,6 +17,9 @@ pub struct AIAgent {
     pub chat: Vec<Message>,
     pub api: AIApi,
     pub note: Vec<(NoteTag, Note)>,
+    // Add AuraScriptRunner here so the agent can use it.
+    // エージェントがAuraScriptRunnerを使用できるようにここに追加。
+    pub aurascript_runner: AuraScriptRunner,
 }
 
 #[derive(Debug, Clone)]
@@ -59,7 +64,14 @@ pub enum Character {
 }
 
 impl AIAgent {
-    pub fn new(api: AIApi, initial_system_prompt: impl Into<String>) -> Self {
+    /// Creates a new `AIAgent` instance.
+    /// 新しい `AIAgent` インスタンスを作成します。
+    ///
+    /// # Arguments
+    /// * `api` - The API configuration for the agent to use.
+    /// * `initial_system_prompt` - The initial system prompt to set for the agent.
+    /// * `aurascript_runner` - The AuraScript runner instance for executing commands.
+    pub fn new(api: AIApi, initial_system_prompt: impl Into<String>, aurascript_runner: AuraScriptRunner) -> Self {
         let mut system_map = HashMap::new();
         system_map.insert("main_system_prompt".to_string(), initial_system_prompt.into());
 
@@ -68,6 +80,7 @@ impl AIAgent {
             chat: Vec::new(),
             api,
             note: Vec::new(),
+            aurascript_runner, // Assign the passed runner
         }
     }
 
@@ -104,7 +117,6 @@ impl AIAgent {
     }
 
     /// Sends a user prompt to the configured AI API and returns a stream of the AI's response chunks.
-    /// 設定されたAI APIにユーザープロンプトを送信し、AIの応答チャンクのストリームを返します。
     pub async fn send_prompt_to_ai(&self, user_prompt: &str) -> Result<BoxStream<'static, Result<String, String>>, String> {
         let mut messages: Vec<serde_json::Value> = Vec::new();
 
@@ -135,11 +147,16 @@ impl Default for AIAgent {
         let chat_history = Vec::new();
         let note_history = Vec::new();
 
+        // Create a default AuraScriptRunner for the default agent.
+        // デフォルトエージェントのためにデフォルトのAuraScriptRunnerを作成。
+        let default_aurascript_runner = AuraScriptRunner::default();
+
         Self {
             system: system_map,
             chat: chat_history,
             api: AIApi::default(),
             note: note_history,
+            aurascript_runner: default_aurascript_runner,
         }
     }
 }
