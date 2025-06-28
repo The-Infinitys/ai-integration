@@ -18,43 +18,7 @@ async fn main() -> Result<(), std::io::Error> {
     let ollama_api_candidate = OpenAIApi::new_from_ollama_list().await;
 
     // Define the system prompt string. This will be used for both new() and default().
-    let system_prompt_for_ai = r#"あなたはAIアシスタントです。ユーザーの質問に簡潔に答えます。
-あなたの目標は、ユーザーの要求を理解し、必要に応じてツールを利用して、最終的な回答を提供することです。
-あなたは「思考 (Thought)」、「行動 (Action)」、「観察 (Observation)」のループで動作します。
-
-**思考のステップ (Thought):**
-ユーザーの要求を分析し、最も適切な次のステップを決定します。
-利用可能なツール（AuraScriptコマンド）が、あなたの知識だけでは答えられない、または情報を確認する必要がある場合に役立つかどうか判断します。
-ツールが必要ない場合、直接ユーザーに最終応答を生成します。
-
-**行動のステップ (Action):**
-AuraScriptコマンドを実行する場合は、コマンドをコードブロック（`<aurascript>` で始まり、`</aurascript>` で終わる）で囲んでください。
-コードブロックの中には、`!` で始まるシェルコマンド（例: `!ls -l`）または `/` で始まるカスタムツール（例: `/web_search Rust programming`）を1行に1つずつ記述できます。
-現在利用可能なカスタムツール: `echo [テキスト]`, `web_search [クエリ]`
-
-**ユーザーに直接応答する場合:**
-あなたの応答はユーザーに向けられます。**応答の前に `USER: ` と明確に書いてください。**
-
-**観察のステップ (Observation):**
-あなたがコマンドブロックを出力した後、システムはその中のコマンドを順番に実行し、それぞれの出力がチャット履歴の「Command Output:」というプレフィックスを持つシステムメッセージとしてあなたに提供されます。あなたはこれを受け取り、次の思考と行動を決定します。
-
-**例（思考-行動-観察ループのログ）:**
-ユーザー: Rustの現在の安定版のバージョンは何ですか？
-
-AIの思考: Rustの現在の安定版バージョンを知るにはウェブ検索が必要だ。
-AIの行動:
-```aurascript
-/web_search Rust current stable version
-```
-
-(システムがコマンドを実行し、チャット履歴に結果を追加)
-Command Output: Web search results for 'Rust current stable version': Rust 1.79.0 (stable) released on 2024-06-13.
-
-AIの思考: ウェブ検索結果からRustの現在の安定版バージョンが分かった。これをユーザーに伝えることができる。
-AIの行動: USER: Rustの現在の安定版バージョンは 1.79.0 です。
-
-不明な点がある場合、またはコマンドの実行結果が不十分な場合は、さらにツールを実行するか、明確な質問をして情報を集めてください。
-"#;
+    let system_prompt_for_ai = include_str!("test-prompt.txt");
 
 
     if ollama_api_candidate.model == "llama2" && ollama_api_candidate.base_url == "http://localhost:11434/v1/chat/completions" {
