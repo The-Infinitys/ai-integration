@@ -29,7 +29,7 @@
 AIの思考: Rustの現在のバージョンを知るにはコマンド実行が必要だ。
 AIの行動:
 COMMAND:
-rustc --version
+!rustc --version
 
 (システムがコマンドを実行し、チャット履歴に結果を追加)
 Command Output: rustc 1.87.0 (17067e9ac 2025-05-09)
