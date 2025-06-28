@@ -91,7 +91,6 @@ impl OpenAIApi {
 impl Default for OpenAIApi {
     fn default() -> Self {
         // Now calling the `local` constructor for consistency
-        // 一貫性のために `local` コンストラクタを呼び出す
         Self::local("llama2".to_string())
     }
 }
@@ -112,8 +111,6 @@ impl AiService for OpenAIApi {
         }
 
         // Structs for deserializing the streaming response deltas from OpenAI.
-        // Ollama often returns content directly in `delta` and sometimes includes `role` at first.
-        // Ollamaはしばしば`delta`内に直接contentを返し、時には最初に`role`を含む。
         #[derive(Deserialize, Debug)]
         struct ChatCompletionChunk {
             choices: Vec<Choice>,
@@ -121,8 +118,9 @@ impl AiService for OpenAIApi {
 
         #[derive(Deserialize, Debug)]
         struct Choice {
+            index: u32,
             delta: DeltaContent,
-            #[serde(default)] // `finish_reason` might not be present in every chunk
+            #[serde(default)]
             finish_reason: Option<String>,
         }
 
@@ -130,7 +128,7 @@ impl AiService for OpenAIApi {
         struct DeltaContent {
             #[serde(default)]
             content: Option<String>,
-            #[serde(default)] // `role` might be present only in the first delta chunk
+            #[serde(default)]
             role: Option<String>,
         }
 
@@ -165,32 +163,60 @@ impl AiService for OpenAIApi {
 
         let processed_stream = futures::stream::try_unfold(initial_state, move |(mut buffer, mut byte_stream)| async move {
             loop {
-                // Try to find a complete line in the buffer
-                if let Some(newline_pos) = buffer.windows(2).position(|w| w == b"\r\n") {
-                    let line_bytes = buffer.split_to(newline_pos + 2); // Include \r\n
-                    let line_str = str::from_utf8(&line_bytes).map_err(|_| "Invalid UTF-8 in stream".to_string())?.trim();
+                // Debug: Current buffer content
+                // println!("[DEBUG] Current buffer: {:?}", String::from_utf8_lossy(&buffer));
+
+                // Try to find a complete line in the buffer (looking for `\n` as primary delimiter)
+                // バッファ内で完全な行を見つけようと試みる（主区切り文字として `\n` を探す）
+                if let Some(mut newline_pos) = buffer.iter().position(|&b| b == b'\n') {
+                    // Check if it's a CRLF. If so, include the \r in the split.
+                    // CRLFかどうかをチェック。もしそうなら、\r もスプリットに含める。
+                    let mut line_length = newline_pos + 1; // Length including the '\n'
+                    if newline_pos > 0 && buffer[newline_pos - 1] == b'\r' {
+                        newline_pos -= 1; // Adjust position to start of \r
+                        line_length += 1; // Include \r in the length to remove
+                    }
+                    
+                    let line_bytes = buffer.split_to(line_length); // Split including the newline sequence
+                    let line_str = str::from_utf8(&line_bytes).map_err(|e| format!("Invalid UTF-8 in stream: {}", e))?.trim();
+
+                    // Debug: Parsed line string
+                    // println!("[DEBUG] Parsed line: \"{}\"", line_str);
 
                     if line_str.starts_with("data: ") {
                         let json_str = &line_str[6..];
+                        // Debug: JSON string to parse
+                        // println!("[DEBUG] JSON string to parse: \"{}\"", json_str);
+
                         if json_str == "[DONE]" {
-                            // Signal end of stream
+                            // Debug: [DONE] received
+                            // println!("[DEBUG] [DONE] received. Terminating stream.");
                             return Ok(None); // This terminates the stream
                         } else {
-                            // Attempt to parse the JSON chunk
-                            // JSONチャンクをパースしようと試みる
                             match serde_json::from_str::<ChatCompletionChunk>(json_str) {
                                 Ok(chunk) => {
-                                    // Extract content from the first choice's delta.
-                                    // Ollama might sometimes send an empty delta or only a role.
-                                    // 最初の選択肢のデルタからコンテンツを抽出。
-                                    // Ollamaは時々空のデルタやロールのみを送信する場合がある。
-                                    if let Some(content) = chunk.choices.into_iter().next().and_then(|choice| choice.delta.content) {
-                                        // Return the content and continue with the remaining state
-                                        return Ok(Some((content, (buffer, byte_stream))));
+                                    if let Some(choice) = chunk.choices.into_iter().next() {
+                                        if let Some(content) = choice.delta.content {
+                                            // Debug: Content found
+                                            // println!("[DEBUG] Content found: \"{}\"", content);
+                                            // Return the content as Ok(String) and continue with the remaining state
+                                            return Ok(Some((content, (buffer, byte_stream))));
+                                        } else if choice.finish_reason.is_some() {
+                                            // Debug: Finish reason without content
+                                            // println!("[DEBUG] Finish reason without content. Terminating stream cleanly.");
+                                            // No content but a finish reason means this is likely the last chunk
+                                            return Ok(None); // Terminate the stream cleanly
+                                        } else {
+                                            // Debug: No content, no finish reason. Continue processing buffer.
+                                            // println!("[DEBUG] No content, no finish_reason. Continuing...");
+                                            // No content and no finish_reason, just continue to next line/chunk
+                                            continue;
+                                        }
                                     } else {
-                                        // If content is empty or not found in this chunk, continue processing buffer
-                                        // このチャンクでコンテンツが空または見つからない場合、バッファの処理を続行
-                                        continue; // Loop again to process next line in buffer
+                                        // Debug: No choices in chunk. Continue processing buffer.
+                                        // println!("[DEBUG] No choices in chunk. Continuing...");
+                                        // No choices or first choice is empty, continue processing buffer
+                                        continue;
                                     }
                                 }
                                 Err(e) => {
@@ -200,16 +226,24 @@ impl AiService for OpenAIApi {
                             }
                         }
                     }
-                    // If it's not a data line or no content was extracted, continue loop to process more lines in buffer
+                    // If it's not a data line, continue loop to process more lines in buffer
+                    // データ行でない場合、バッファ内のさらに多くの行を処理するためにループを続行
+                    // println!("[DEBUG] Non-data line or unrecognized. Continuing...");
+                    continue; // Process next line in buffer
                 } else {
                     // No complete line in buffer, try to read more from the underlying byte_stream
+                    // バッファに完全な行がないため、基になる byte_stream からさらに読み込もうと試みる
+                    // println!("[DEBUG] No complete line in buffer. Reading more from byte_stream...");
                     match byte_stream.next().await {
                         Some(chunk_result) => {
                             let chunk = chunk_result.map_err(|e| format!("Error reading stream chunk: {}", e))?;
+                            // Debug: Bytes read from stream
+                            // println!("[DEBUG] Read {} bytes from stream. Adding to buffer.", chunk.len());
                             buffer.extend_from_slice(&chunk); // Add new bytes to buffer
                         }
                         None => {
                             // End of underlying byte stream, and no more complete lines in buffer
+                            // println!("[DEBUG] End of byte_stream. Terminating stream.");
                             return Ok(None); // Terminate the stream
                         }
                     }
