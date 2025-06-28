@@ -211,7 +211,7 @@ impl AIAgent {
                 }
                 Err(e) => {
                     eprintln!("Error initiating AI stream: {}", e);
-                    self.add_message(Character::Agent, Character::User, &format!("Error: {}", e));
+                    self.add_message(Character::Agent, Character::User, format!("Error: {}", e));
                     return Err(format!("AI stream initiation error: {}", e));
                 }
             };
@@ -265,7 +265,7 @@ impl AIAgent {
                                     }
                                     Err(e) => {
                                         eprintln!("[Tool Error]: {}", e);
-                                        self.add_message(Character::Cmd, Character::Agent, &format!("Error executing AI-generated command '{}': {}", command_line, e));
+                                        self.add_message(Character::Cmd, Character::Agent, format!("Error executing AI-generated command '{}': {}", command_line, e));
                                         command_blocks_executed = true;
                                     }
                                 }

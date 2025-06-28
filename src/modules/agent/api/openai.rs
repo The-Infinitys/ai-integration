@@ -205,8 +205,7 @@ impl AiService for OpenAIApi {
                         // Debug: Parsed line string
                         // println!("[DEBUG] Parsed line: \"{}\"", line_str);
 
-                        if line_str.starts_with("data: ") {
-                            let json_str = &line_str[6..];
+                        if let Some(json_str) = line_str.strip_prefix("data: ") {
                             // Debug: JSON string to parse
                             // println!("[DEBUG] JSON string to parse: \"{}\"", json_str);
 

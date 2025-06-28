@@ -3,7 +3,6 @@
 use ai_integration::modules::agent::{AIAgent, api::{AIApi, ApiClient, openai::OpenAIApi}, Character};
 use ai_integration::modules::aurascript::AuraScriptRunner;
 use ai_integration::modules::prompt;
-use tokio;
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
@@ -123,7 +122,7 @@ AIの行動: USER: Rustの現在の安定版バージョンは 1.79.0 です。
                 }
                 Err(e) => {
                     prompt::print_error(&format!("[AuraScript Error]: {}", e));
-                    agent.add_message(Character::Cmd, Character::Agent, &format!("Error: {}", e));
+                    agent.add_message(Character::Cmd, Character::Agent, format!("Error: {}", e));
                 }
             }
         } else {
