@@ -1,5 +1,9 @@
 // src/modules/agent.rs
 pub mod api;
+
+// ai_print! マクロ: デフォルトでは println! に委譲。コマンドラインオプション等で切り替え可能にする場合はここを拡張。
+use crate::ai_print;
+
 // Removed AiService and ApiClient as they are not directly used in AIAgent's module top level
 use api::AIApi;
 use chrono::{self, Utc};
@@ -197,15 +201,15 @@ impl AIAgent {
             }
 
             // Display AI's thinking process to user
-            println!("\n[AI Thinking] Sending chat history to AI...");
-            println!(
+            ai_print!("\n[AI Thinking] Sending chat history to AI...");
+            ai_print!(
                 "  Model: {}",
                 self.api
                     .config
                     .get("model")
                     .unwrap_or(&"unknown".to_string())
             );
-            println!(
+            ai_print!(
                 "  Base URL: {}",
                 self.api
                     .config
@@ -274,11 +278,11 @@ impl AIAgent {
                                 return Err(error_msg.to_string());
                             }
                             for command_line in commands {
-                                println!("[Tool Execution] Running command: \"{}\"", command_line);
+                                ai_print!("[Tool Execution] Running command: \"{}\"", command_line);
                                 self.add_message(Character::Agent, Character::Cmd, command_line);
                                 match self.aurascript_runner.run_script(command_line).await {
                                     Ok(script_output) => {
-                                        println!("[Tool Output]:\n{}", script_output);
+                                        ai_print!("[Tool Output]:\n{}", script_output);
                                         self.add_message(Character::Cmd, Character::Agent, &script_output);
                                     }
                                     Err(e) => {
@@ -325,11 +329,11 @@ impl AIAgent {
                             return Err(error_msg.to_string());
                         }
                         for command_line in commands {
-                            println!("[Tool Execution] Running command: \"{}\"", command_line);
+                            ai_print!("[Tool Execution] Running command: \"{}\"", command_line);
                             self.add_message(Character::Agent, Character::Cmd, command_line);
                             match self.aurascript_runner.run_script(command_line).await {
                                 Ok(script_output) => {
-                                    println!("[Tool Output]:\n{}", script_output);
+                                    ai_print!("[Tool Output]:\n{}", script_output);
                                     self.add_message(Character::Cmd, Character::Agent, &script_output);
                                 }
                                 Err(e) => {

@@ -37,7 +37,7 @@ async fn main() -> Result<(), std::io::Error> {
             api,
             system_prompt_for_ai.to_string(),
             aura_script_runner_instance,
-            false, // Default: AI cannot execute commands autonomously
+            true, // Default: AI cannot execute commands autonomously
         );
         prompt::print_info(&format!("  Using API Base URL: {}", agent.api.config.get("base_url").unwrap_or(&"unknown".to_string())));
         prompt::print_info(&format!("  Using Model: {}", agent.api.config.get("model").unwrap_or(&"unknown".to_string())));
