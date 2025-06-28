@@ -44,17 +44,17 @@ pub fn exec_bash_script(src: &PathBuf) -> Result<(), std::io::Error> {
     let result = Command::new("bash")
         .arg(src)
         .status()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to execute: {}", e)))?;
+        .map_err(|e| std::io::Error::other(format!("Failed to execute: {}", e)))?;
     if result.success() {
         Ok(())
     } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Script exited with code: {:?}", result.code()),
-        ))
+        Err(std::io::Error::other(format!(
+            "Script exited with code: {:?}",
+            result.code()
+        )))
     }
 }
 
 fn main() -> Result<(), std::io::Error> {
-    exec_bash_script(&PathBuf::from("build/w3m.sh"))
+    Ok(())
 }
