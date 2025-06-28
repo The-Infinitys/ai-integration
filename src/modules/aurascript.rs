@@ -19,8 +19,12 @@ use std::pin::Pin; // Import Pin for boxed futures
 /// 内部コマンド用のBox化された、Send + Sync + 'static な非同期クロージャの型エイリアス。
 /// Now returns `Pin<Box<dyn Future + Send>>` directly, which is awaitable.
 /// これで直接 `Pin<Box<dyn Future + Send>>` を返し、これは await 可能である。
-pub type InternalCommandFn = Arc<dyn Fn(String) -> Pin<Box<dyn futures::Future<Output = Result<String, String>> + Send>> + Send + Sync + 'static>;
-
+pub type InternalCommandFn = Arc<
+    dyn Fn(String) -> Pin<Box<dyn futures::Future<Output = Result<String, String>> + Send>>
+        + Send
+        + Sync
+        + 'static,
+>;
 
 /// Manages and executes AuraScript commands.
 /// AuraScriptコマンドを管理し、実行します。
@@ -71,13 +75,16 @@ impl AuraScriptRunner {
     /// # Returns
     /// `Ok(String)` containing the command's output, or `Err(String)` if an error occurs.
     pub async fn run_script(&self, script: &str) -> Result<String, String> {
-        if script.starts_with('!') {
+        if let Some(stripped) = script.strip_prefix('!') {
             // Shell command
-            let cmd_parts: Vec<&str> = script[1..].splitn(2, ' ').collect();
+            let cmd_parts: Vec<&str> = stripped.splitn(2, ' ').collect();
             let command = cmd_parts[0];
             let args = cmd_parts.get(1).unwrap_or(&"");
 
-            println!("[AuraScript] Executing shell command: '{} {}'", command, args);
+            println!(
+                "[AuraScript] Executing shell command: '{} {}'",
+                command, args
+            );
 
             let output = Command::new(command)
                 .args(shlex::split(args).unwrap_or_default()) // Safely split arguments
@@ -95,13 +102,16 @@ impl AuraScriptRunner {
                     String::from_utf8_lossy(&output.stderr)
                 ))
             }
-        } else if script.starts_with('/') {
+        } else if let Some(stripped) = script.strip_prefix('/') {
             // Internal command
-            let cmd_parts: Vec<&str> = script[1..].splitn(2, ' ').collect();
+            let cmd_parts: Vec<&str> = stripped.splitn(2, ' ').collect();
             let command_name = cmd_parts[0];
             let args = cmd_parts.get(1).unwrap_or(&"").to_string(); // Arguments for the internal command
 
-            println!("[AuraScript] Executing internal command: '/{} {}'", command_name, args);
+            println!(
+                "[AuraScript] Executing internal command: '/{} {}'",
+                command_name, args
+            );
 
             if let Some(func) = self.internal_commands.get(command_name) {
                 // func(args) now returns Pin<Box<dyn Future>> directly, so it can be awaited.

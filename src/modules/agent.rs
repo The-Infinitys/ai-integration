@@ -293,8 +293,8 @@ impl AIAgent {
                 // Treat the remaining AI response (if any) as a final message to the user.
                 let final_ai_response_part = &full_ai_response[current_pos..].trim();
 
-                if final_ai_response_part.starts_with("USER:") {
-                    let final_response_text = final_ai_response_part["USER:".len()..].trim().to_string();
+                if let Some(stripped)= final_ai_response_part.strip_prefix("USER:") {
+                    let final_response_text = stripped.trim().to_string();
                     self.add_message(Character::Agent, Character::User, &final_response_text);
                     println!("\nAI Final Response: {}", final_response_text);
                     return Ok(final_response_text);

@@ -25,7 +25,7 @@ impl OpenAIApi {
     ///
     /// # Arguments
     /// * `api_key` - Your OpenAI API key. Empty string means no Authorization header will be sent.
-    ///             あなたのOpenAI APIキー。空文字列の場合、Authorizationヘッダーは送信されません。
+    ///   あなたのOpenAI APIキー。空文字列の場合、Authorizationヘッダーは送信されません。
     /// * `model` - The name of the OpenAI model to use (e.g., "gpt-3.5-turbo", "gpt-4").
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
