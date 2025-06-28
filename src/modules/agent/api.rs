@@ -1,29 +1,28 @@
 // src/modules/agent/api.rs
-pub mod openai; // New module for OpenAI
-use std::collections::HashMap;
-use async_trait::async_trait; // For async traits
+pub mod openai;
+use std::collections::HashMap; // Removed unused HashMap as it's not directly used in the module's top level now
+use async_trait::async_trait;
+use futures::stream::BoxStream;
 
 /// Defines the interface for AI services.
 /// AIサービスのためのインターフェースを定義します。
 /// This trait allows `AIAgent` to interact with different AI models polymorphically.
-/// このトレイトにより、`AIAgent` は異なるAIモデルと多態的にやり取りできます。
 #[async_trait]
 pub trait AiService {
-    /// Sends a vector of messages (e.g., system, user) to the AI and returns the AI's response text.
-    /// (システム、ユーザーなどの) メッセージのベクターをAIに送信し、AIの応答テキストを返します。
-    /// Returns `Ok(response_text)` on success, `Err(error_message)` on failure.
-    /// 成功時には `Ok(response_text)` を、失敗時には `Err(error_message)` を返します。
-    async fn send_messages(&self, messages: Vec<serde_json::Value>) -> Result<String, String>;
+    /// Sends a vector of messages (e.g., system, user) to the AI and returns a stream of its response text chunks.
+    /// (システム、ユーザーなどの) メッセージのベクターをAIに送信し、AIの応答テキストチャンクのストリームを返します。
+    /// Each item in the stream is a `Result<String, String>`, where `Ok(String)` is a text chunk
+    /// and `Err(String)` indicates an error during streaming.
+    /// ストリームの各アイテムは `Result<String, String>` で、`Ok(String)` はテキストチャンク、
+    /// `Err(String)` はストリーミング中のエラーを示します。
+    async fn send_messages(&self, messages: Vec<serde_json::Value>) -> Result<BoxStream<'static, Result<String, String>>, String>;
 }
 
 /// An enum to hold different concrete API client implementations.
 /// 異なる具体的なAPIクライアント実装を保持するためのEnumです。
-/// This allows `AIApi` to manage different AI backend services.
-/// これにより、`AIApi` は異なるAIバックエンドサービスを管理できます。
 pub enum ApiClient {
     OpenAI(openai::OpenAIApi),
-    // Add other API clients (e.g., GeminiAIApi, OllamaApi) here as needed.
-    // 必要に応じて、他のAPIクライアント（例：GeminiAIApi、OllamaApi）をここに追加します。
+    // Add other API clients here as needed.
 }
 
 impl ApiClient {
@@ -39,12 +38,8 @@ impl ApiClient {
 /// Manages the chosen API client and its specific configuration.
 /// 選択されたAPIクライアントとその特定の設定を管理します。
 pub struct AIApi {
-    /// The actual API client instance (e.g., OpenAI, Gemini).
-    /// 実際のAPIクライアントインスタンス（例：OpenAI、Gemini）
     pub client: ApiClient,
-    /// Additional configuration like model names, timeouts, etc.
-    /// モデル名、タイムアウトなどの追加設定
-    pub config: HashMap<String, String>,
+    pub config: HashMap<String, String>, // HashMap is used here, so keep this import
 }
 
 impl AIApi {
@@ -69,9 +64,8 @@ impl AIApi {
 impl Default for AIApi {
     fn default() -> Self {
         let mut config = HashMap::new();
-        // The default model for OpenAI locally is often 'llama2' via Ollama.
-        // ローカルのOpenAI互換サービスでは、デフォルトモデルはOllama経由の'llama2'であることが多い。
         config.insert("model".to_string(), "llama2".to_string());
+        config.insert("base_url".to_string(), "http://localhost:11434/v1/chat/completions".to_string());
         Self {
             client: ApiClient::OpenAI(openai::OpenAIApi::default()),
             config,
@@ -79,13 +73,6 @@ impl Default for AIApi {
     }
 }
 
-
-// The `ApiType` enum is now less directly involved in dispatch but can still be used for
-// configuration or informational purposes if needed elsewhere.
-// `ApiType` enumは、ディスパッチに直接関与することは少なくなりましたが、必要に応じて
-// 他の場所で設定や情報目的で使用できます。
 pub enum ApiType {
     OpenAI,
-    // Other types could be added here for conceptual grouping.
-    // 他のタイプを概念的なグループ化のためにここに追加できます。
 }

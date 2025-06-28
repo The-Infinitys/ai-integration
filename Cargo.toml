@@ -6,7 +6,9 @@ build = "build.rs"
 
 [dependencies]
 async-trait = "0.1.88"
+bytes = "1.10.1"
 chrono = { version = "0.4.41", features = ["serde"] }
+futures = "0.3.31"
 futures-util = "0.3.31"
 html2md = "0.2.15"
 regex = "1.11.1"

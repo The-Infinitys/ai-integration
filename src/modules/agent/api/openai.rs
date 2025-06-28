@@ -1,21 +1,23 @@
 // src/modules/agent/api/openai.rs
-use reqwest::{Client, Error as ReqwestError};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use tokio::process::Command; // Use tokio's async Command for non-blocking execution
-use std::str; // For converting command output to string
+use tokio::process::Command;
+use std::str;
+use futures::stream::{self, BoxStream, StreamExt, TryStreamExt};
+use bytes::BytesMut;
 
-use super::AiService; // Import the AiService trait from the parent module
+use super::AiService;
 
 /// Configuration and client for interacting with the OpenAI API.
 /// OpenAI API とやり取りするための設定とクライアント。
-#[derive(Debug)] // Add Debug trait for easier inspection
+#[derive(Debug)]
 pub struct OpenAIApi {
-    pub client: Client, // HTTP client for making requests. リクエストを行うためのHTTPクライアント。
-    pub api_key: String, // OpenAI API key. OpenAI APIキー。
-    pub base_url: String, // Base URL for OpenAI chat completions endpoint. OpenAIチャット補完エンドポイントのベースURL。
-    pub model: String, // The specific OpenAI model to use (e.g., "gpt-3.5-turbo"). 使用する特定のOpenAIモデル（例： "gpt-3.5-turbo"）。
+    pub client: Client,
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
 }
 
 impl OpenAIApi {
@@ -25,22 +27,18 @@ impl OpenAIApi {
     /// # Arguments
     /// * `api_key` - Your OpenAI API key. Empty string means no Authorization header will be sent.
     ///             あなたのOpenAI APIキー。空文字列の場合、Authorizationヘッダーは送信されません。
-    /// * `model` - The name of the OpenAI model to use (e.g., "gpt-3.5-turbo", "gpt-4"). 使用する特定のOpenAIモデル（例： "gpt-3.5-turbo"、 "gpt-4"）。
+    /// * `model` - The name of the OpenAI model to use (e.g., "gpt-3.5-turbo", "gpt-4").
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             client: Client::new(),
             api_key: api_key.into(),
-            base_url: "https://api.openai.com/v1/chat/completions".to_string(), // Standard endpoint
+            base_url: "https://api.openai.com/v1/chat/completions".to_string(),
             model: model.into(),
         }
     }
 
     /// Attempts to create an `OpenAIApi` instance by detecting available Ollama models.
     /// Ollamaで利用可能なモデルを検出して `OpenAIApi` インスタンスを作成しようとします。
-    /// If `ollama list` command is successful and models are found, the first model listed
-    /// will be used. Otherwise, it falls back to the standard `OpenAIApi::default()`.
-    /// `ollama list` コマンドが成功しモデルが検出された場合、リストの最初のモデルが使用されます。
-    /// それ以外の場合は、標準の `OpenAIApi::default()` にフォールバックします。
     pub async fn new_from_ollama_list() -> Self {
         println!("[INFO] Attempting to detect Ollama models...");
         let output = Command::new("ollama")
@@ -52,14 +50,12 @@ impl OpenAIApi {
             Ok(output) => {
                 if output.status.success() {
                     let stdout = str::from_utf8(&output.stdout).unwrap_or("");
-                    let mut lines = stdout.lines().skip(1); // Skip header line (NAME ID SIZE MODIFIED)
+                    let mut lines = stdout.lines().skip(1);
                     if let Some(first_model_line) = lines.next() {
-                        // Example line: "gemma3:latest    a2af6cc3eb7f    3.3 GB    43 hours ago"
-                        // Split by whitespace and take the first part which is the model name.
                         if let Some(model_name) = first_model_line.split_whitespace().next() {
                             println!("[INFO] Detected Ollama model: '{}'. Using it for default.", model_name);
                             return Self::new(
-                                "".to_string(), // No API key needed for local Ollama
+                                "".to_string(),
                                 model_name.to_string(),
                             );
                         }
@@ -86,9 +82,9 @@ impl Default for OpenAIApi {
     fn default() -> Self {
         Self {
             client: Client::new(),
-            api_key: "".to_string(), // Default to an empty API key (no header sent)
-            base_url: "http://localhost:11434/v1/chat/completions".to_string(), // Default for Ollama etc.
-            model: "llama2".to_string(), // Common default model for local LLMs via Ollama
+            api_key: "".to_string(),
+            base_url: "http://localhost:11434/v1/chat/completions".to_string(),
+            model: "llama2".to_string(),
         }
     }
 }
@@ -97,92 +93,113 @@ impl Default for OpenAIApi {
 /// `OpenAIApi` 用に `AiService` トレイトを実装し、OpenAI にメッセージを送信します。
 #[async_trait]
 impl AiService for OpenAIApi {
-    /// Sends messages to the OpenAI Chat Completions API and returns the AI's response content.
-    /// OpenAI Chat Completions API にメッセージを送信し、AI の応答コンテンツを返します。
-    ///
-    /// The `messages` vector should be an array of JSON objects, typically in the format:
-    /// `{"role": "system", "content": "..."}`
-    /// `{"role": "user", "content": "..."}`
-    /// `{"role": "assistant", "content": "..."}`
-    /// `messages` ベクターは、通常以下の形式のJSONオブジェクトの配列である必要があります。
-    /// `{"role": "system", "content": "..."}`
-    /// `{"role": "user", "content": "..."}`
-    /// `{"role": "assistant", "content": "..."}`
-    ///
-    /// # Returns
-    /// * `Ok(String)`: The content of the AI's response message. AIの応答メッセージのコンテンツ。
-    /// * `Err(String)`: An error message if the API call fails or the response is invalid. API呼び出しが失敗した場合、または応答が無効な場合のエラーメッセージ。
-    async fn send_messages(&self, messages: Vec<serde_json::Value>) -> Result<String, String> {
+    /// Sends messages to the OpenAI Chat Completions API and returns a stream of its response text chunks.
+    /// OpenAI Chat Completions API にメッセージを送信し、AI の応答テキストチャンクのストリームを返します。
+    async fn send_messages(&self, messages: Vec<serde_json::Value>) -> Result<BoxStream<'static, Result<String, String>>, String> {
         // Structs for serializing the request body.
-        // リクエストボディをシリアライズするための構造体。
         #[derive(Serialize)]
         struct ChatCompletionRequest {
             model: String,
             messages: Vec<serde_json::Value>,
+            stream: bool,
         }
 
-        // Structs for deserializing the response body from OpenAI.
-        // OpenAI からの応答ボディをデシリアライズするための構造体。
-        #[derive(Deserialize)]
-        struct ChatCompletionResponse {
+        // Structs for deserializing the streaming response deltas from OpenAI.
+        #[derive(Deserialize, Debug)]
+        struct ChatCompletionChunk {
             choices: Vec<Choice>,
         }
 
-        #[derive(Deserialize)]
+        #[derive(Deserialize, Debug)]
         struct Choice {
-            message: MessageContent,
+            delta: DeltaContent,
         }
 
-        #[derive(Deserialize)]
-        struct MessageContent {
-            content: String,
+        #[derive(Deserialize, Debug)]
+        struct DeltaContent {
+            #[serde(default)]
+            content: Option<String>,
         }
 
-        // Build the request body.
-        // リクエストボディを構築。
+        // Build the request body, enabling streaming.
         let request_body = ChatCompletionRequest {
             model: self.model.clone(),
             messages,
+            stream: true,
         };
 
-        // Create the request builder.
-        // リクエストビルダーを作成。
         let mut request_builder = self.client.post(&self.base_url);
 
-        // ONLY add Authorization header if api_key is not empty.
-        // api_keyが空でない場合にのみAuthorizationヘッダーを追加。
         if !self.api_key.is_empty() {
             request_builder = request_builder.header("Authorization", format!("Bearer {}", self.api_key));
         }
 
-        // Send the HTTP POST request to OpenAI.
-        // OpenAI に HTTP POST リクエストを送信。
         let response = request_builder
-            .json(&request_body) // Serialize request_body to JSON and set as body. request_body を JSON にシリアライズしてボディとして設定。
+            .json(&request_body)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?; // Handle network or request building errors. ネットワークまたはリクエスト構築エラーを処理。
+            .map_err(|e| format!("Request failed: {}", e))?;
 
-        // Check if the response status is successful.
-        // 応答ステータスが成功しているかチェック。
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_else(|_| "No response body".to_string());
             return Err(format!("API returned an error: Status={}, Body={}", status, text));
         }
 
-        // Parse the successful response body.
-        // 成功した応答ボディをパース。
-        let response_body: ChatCompletionResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse response JSON: {}", e))?; // Handle JSON parsing errors. JSONパースエラーを処理。
+        // Move `response.bytes_stream()` into the initial state of `try_unfold`.
+        // `response.bytes_stream()` を `try_unfold` の初期状態に移動します。
+        let initial_state = (BytesMut::new(), response.bytes_stream());
 
-        // Extract the content from the first choice.
-        // 最初の選択肢からコンテンツを抽出。
-        response_body.choices.into_iter()
-            .next() // Get the first choice. 最初の選択肢を取得。
-            .map(|choice| choice.message.content) // Get the content from the message. メッセージからコンテンツを取得。
-            .ok_or_else(|| "No choices found in AI response".to_string()) // Handle cases where no choices are returned. 選択肢が返されないケースを処理。
+        // State for try_unfold: (BytesMut buffer, Stream of Bytes)
+        // try_unfold の状態: (BytesMut バッファ, バイトのストリーム)
+        let processed_stream = futures::stream::try_unfold(initial_state, move |(mut buffer, mut byte_stream)| async move {
+            loop {
+                // Try to find a complete line in the buffer
+                if let Some(newline_pos) = buffer.windows(2).position(|w| w == b"\r\n") {
+                    let line_bytes = buffer.split_to(newline_pos + 2); // Include \r\n
+                    let line_str = str::from_utf8(&line_bytes).map_err(|_| "Invalid UTF-8 in stream".to_string())?.trim();
+
+                    if line_str.starts_with("data: ") {
+                        let json_str = &line_str[6..];
+                        if json_str == "[DONE]" {
+                            // Signal end of stream
+                            return Ok(None); // This terminates the stream
+                        } else {
+                            match serde_json::from_str::<ChatCompletionChunk>(json_str) {
+                                Ok(chunk) => {
+                                    if let Some(content) = chunk.choices.into_iter().next().and_then(|choice| choice.delta.content) {
+                                        // Return the content as Ok(String) and continue with the remaining state
+                                        // コンテンツを Ok(String) として返し、残りの状態で続行
+                                        return Ok(Some((content, (buffer, byte_stream)))); // Return content, and the (buffer, byte_stream) tuple as the next state
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to parse JSON chunk: {} (Line: {})", e, json_str);
+                                    // Propagate parsing error as the error of the stream
+                                    return Err(format!("Failed to parse JSON chunk: {}", e));
+                                }
+                            }
+                        }
+                    }
+                    // If it's not a data line or no content was extracted, continue loop to process more lines in buffer
+                } else {
+                    // No complete line in buffer, try to read more from the underlying byte_stream
+                    match byte_stream.next().await {
+                        Some(chunk_result) => {
+                            let chunk = chunk_result.map_err(|e| format!("Error reading stream chunk: {}", e))?;
+                            buffer.extend_from_slice(&chunk); // Add new bytes to buffer
+                        }
+                        None => {
+                            // End of underlying byte stream, and no more complete lines in buffer
+                            return Ok(None); // Terminate the stream
+                        }
+                    }
+                }
+            }
+        })
+        .map_err(|e| e.to_string()) // Convert any internal error from try_unfold into a String error for the outer Result
+        .boxed();
+
+        Ok(processed_stream)
     }
 }
