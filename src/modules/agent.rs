@@ -86,7 +86,7 @@ fn extract_tool_call_from_response(response_content: &str) -> Option<AiToolCall>
 pub struct AIAgent {
     api: api::AIApi,
     messages: Vec<ChatMessage>,
-    tool_manager: ToolManager,
+    pub tool_manager: ToolManager,
     default_prompt_template: String,
 }
 
