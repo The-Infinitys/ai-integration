@@ -21,7 +21,6 @@ impl ChatSession {
         println!("{}", "シェルコマンド: !<command>".cyan());
 
         println!("\n{}", "利用可能なOllamaモデル:".purple().bold());
-        // 修正: self.agent.list_models() -> self.agent.list_available_models()
         match self.agent.list_available_models().await {
             Ok(models) => {
                 if let Some(tags) = models["models"].as_array() {
@@ -49,7 +48,6 @@ impl ChatSession {
                 continue;
             }
 
-            // スラッシュコマンドの処理
             if user_input.starts_with('/') {
                 match user_input {
                     "/exit" => {
@@ -76,14 +74,12 @@ impl ChatSession {
                 }
             }
 
-            // シェルコマンドの処理
             if user_input.starts_with('!') {
                 let command_and_args = &user_input[1..];
                 
                 println!("{}", "AI: ".green().bold());
-                println!("{}", "  シェルコマンドを実行中...".truecolor(128, 128, 128)); // グレー
+                println!("{}", "  シェルコマンドを実行中...".truecolor(128, 128, 128));
                 
-                // shellツールに直接コマンドを渡す
                 let shell_result = self.agent.tool_manager.execute_tool(
                     "shell",
                     serde_json::json!({
@@ -95,9 +91,8 @@ impl ChatSession {
                 match shell_result {
                     Ok(result) => {
                         let result_str = serde_json::to_string_pretty(&result).unwrap_or_default();
-                        println!("{}", format!("  コマンド結果:\n{}", result_str).truecolor(128, 128, 128)); // グレー
+                        println!("{}", format!("  コマンド結果:\n{}", result_str).truecolor(128, 128, 128));
                         
-                        // シェルコマンドの結果をAIにフィードバック
                         let feedback_message = format!(
 r#"---
 tool_result:
@@ -107,17 +102,18 @@ tool_result:
 ---"#,
                             result_str
                         );
-                        self.agent.add_ai_response(feedback_message); // AIの応答として追加し、次のAIのターンで考慮させる
+                        self.agent.add_ai_response(feedback_message);
 
-                        println!("{}", "  AIがツール結果を考慮中...".normal()); // 思考（通常の文字）
+                        println!("{}", "  AIがツール結果を考慮中...".normal());
                         
-                        // ここで再度AIに推論させるために、ダミーのユーザー入力で chat_with_tools_realtime を呼び出す
                         match self.agent.chat_with_tools_realtime("ツール実行結果に基づいて次のアクションをしてください。".to_string()).await {
                              Ok(mut stream) => {
                                 while let Some(chunk_result) = stream.next().await {
                                     match chunk_result {
                                         Ok(chunk) => {
-                                            print!("{}", chunk.bold()); // AIの最終応答を太字で表示
+                                            // Agent内部で表示されるため、ここでは主に最終的な改行を目的とする。
+                                            // ただし、もしAgentがテキストを返した場合のフォールバックとして残す。
+                                            print!("{}", chunk.bold()); 
                                             io::stdout().flush().map_err(|e| format!("出力のフラッシュに失敗しました: {}", e))?;
                                         },
                                         Err(e) => {
@@ -126,7 +122,7 @@ tool_result:
                                         }
                                     }
                                 }
-                                println!();
+                                println!(); // 最終的な改行
                             },
                             Err(e) => {
                                 eprintln!("\n{} {:?}", "AIとの通信エラー:".red().bold(), e);
@@ -140,20 +136,19 @@ tool_result:
                 continue;
             }
 
-            // 通常のAIチャット処理
             print!("{}", "AI: ".green().bold());
             io::stdout().flush().map_err(|e| format!("出力のフラッシュに失敗しました: {}", e))?;
 
-            // AIの思考中表示 (AIが実際にツールを呼び出す前の初期フェーズ)
-            println!("{}", "  AIが思考中...".normal()); // 思考（通常の文字）
+            println!("{}", "  AIが思考中...".normal());
 
-            // chat_with_tools_realtime を呼び出す
             match self.agent.chat_with_tools_realtime(user_input.to_string()).await {
                 Ok(mut stream) => {
                     while let Some(chunk_result) = stream.next().await {
                         match chunk_result {
                             Ok(chunk) => {
-                                print!("{}", chunk.bold()); // AIの出力を太字でリアルタイム表示
+                                // Agent内部で表示されるため、ここでは主に最終的な改行を目的とする。
+                                // ただし、もしAgentがテキストを返した場合のフォールバックとして残す。
+                                print!("{}", chunk.bold()); 
                                 io::stdout().flush().map_err(|e| format!("出力のフラッシュに失敗しました: {}", e))?;
                             },
                             Err(e) => {
