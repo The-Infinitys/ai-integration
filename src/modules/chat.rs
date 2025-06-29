@@ -49,7 +49,6 @@ impl ChatSession {
             print!("AI: ");
             io::stdout().flush().map_err(|e| format!("出力のフラッシュに失敗しました: {}", e))?;
 
-            // agent.chat_stream の代わりに agent.chat_with_tools を呼び出す
             match self.agent.chat_with_tools(user_input.to_string()).await {
                 Ok(mut stream) => {
                     while let Some(chunk_result) = stream.next().await {
@@ -64,8 +63,7 @@ impl ChatSession {
                             }
                         }
                     }
-                    println!(); // AIの応答の最後に改行
-                    // AIの最終応答は chat_with_tools 内で履歴に追加されるため、ここでは不要
+                    println!();
                 },
                 Err(e) => {
                     eprintln!("\nAIとの通信エラー: {:?}", e);
