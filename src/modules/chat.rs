@@ -21,7 +21,8 @@ impl ChatSession {
         println!("{}", "シェルコマンド: !<command>".cyan());
 
         println!("\n{}", "利用可能なOllamaモデル:".purple().bold());
-        match self.agent.list_models().await {
+        // 修正: self.agent.list_models() -> self.agent.list_available_models()
+        match self.agent.list_available_models().await {
             Ok(models) => {
                 if let Some(tags) = models["models"].as_array() {
                     for model in tags {
@@ -77,11 +78,12 @@ impl ChatSession {
 
             // シェルコマンドの処理
             if user_input.starts_with('!') {
-                let command_and_args = &user_input[1..]; // '!' を除く
-                println!("{}", "AI: ".green().bold()); // AIのプロンプトを先に表示
-
+                let command_and_args = &user_input[1..];
+                
+                println!("{}", "AI: ".green().bold());
                 println!("{}", "  シェルコマンドを実行中...".truecolor(128, 128, 128)); // グレー
                 
+                // shellツールに直接コマンドを渡す
                 let shell_result = self.agent.tool_manager.execute_tool(
                     "shell",
                     serde_json::json!({
@@ -95,6 +97,7 @@ impl ChatSession {
                         let result_str = serde_json::to_string_pretty(&result).unwrap_or_default();
                         println!("{}", format!("  コマンド結果:\n{}", result_str).truecolor(128, 128, 128)); // グレー
                         
+                        // シェルコマンドの結果をAIにフィードバック
                         let feedback_message = format!(
 r#"---
 tool_result:
@@ -104,12 +107,12 @@ tool_result:
 ---"#,
                             result_str
                         );
-                        self.agent.add_ai_response(feedback_message);
+                        self.agent.add_ai_response(feedback_message); // AIの応答として追加し、次のAIのターンで考慮させる
 
                         println!("{}", "  AIがツール結果を考慮中...".normal()); // 思考（通常の文字）
                         
-                        // chat_with_tools内部でループが管理されているため、ユーザーはAIの次の出力を待つ
-                        match self.agent.chat_with_tools("ツール実行結果に基づいて次のアクションをしてください。".to_string()).await {
+                        // ここで再度AIに推論させるために、ダミーのユーザー入力で chat_with_tools_realtime を呼び出す
+                        match self.agent.chat_with_tools_realtime("ツール実行結果に基づいて次のアクションをしてください。".to_string()).await {
                              Ok(mut stream) => {
                                 while let Some(chunk_result) = stream.next().await {
                                     match chunk_result {
@@ -144,15 +147,13 @@ tool_result:
             // AIの思考中表示 (AIが実際にツールを呼び出す前の初期フェーズ)
             println!("{}", "  AIが思考中...".normal()); // 思考（通常の文字）
 
-            match self.agent.chat_with_tools(user_input.to_string()).await {
+            // chat_with_tools_realtime を呼び出す
+            match self.agent.chat_with_tools_realtime(user_input.to_string()).await {
                 Ok(mut stream) => {
-                    // ここで、AIからのストリームがツール呼び出しの場合はagent.rs側で処理され、
-                    // 最終的なテキスト応答だけが返ってくることを期待している。
-                    // ツール呼び出しが発生した場合、agent.rsのループ内で表示される。
                     while let Some(chunk_result) = stream.next().await {
                         match chunk_result {
                             Ok(chunk) => {
-                                print!("{}", chunk.bold()); // AIの最終応答を太字で表示
+                                print!("{}", chunk.bold()); // AIの出力を太字でリアルタイム表示
                                 io::stdout().flush().map_err(|e| format!("出力のフラッシュに失敗しました: {}", e))?;
                             },
                             Err(e) => {
@@ -161,7 +162,7 @@ tool_result:
                             }
                         }
                     }
-                    println!();
+                    println!(); // 最終的な改行
                 },
                 Err(e) => {
                     eprintln!("\n{} {:?}", "AIとの通信エラー:".red().bold(), e);
