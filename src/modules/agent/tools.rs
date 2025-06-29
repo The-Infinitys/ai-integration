@@ -1,6 +1,6 @@
 // src/modules/tools.rs
 pub mod shell;
-
+pub mod utils;
 use async_trait::async_trait;
 use std::collections::HashMap;
 

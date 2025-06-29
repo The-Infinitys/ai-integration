@@ -18,7 +18,16 @@ tool_call:
 tool_call:
   tool_name: shell
   parameters:
-    command_line: ls -l # 変更: 単一の command_line パラメータ
+    command_line: ls -l # 単一の command_line パラメータ
+---
+
+**例：** `websearch` ツールで `Rust言語とは` と検索する場合
+
+---
+tool_call:
+  tool_name: wwwsearch
+  parameters:
+    query: Rust言語とは # 単一のquery パラメータ
 ---
 
 ## ツール実行結果のフィードバック

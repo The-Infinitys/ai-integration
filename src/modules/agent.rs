@@ -3,14 +3,14 @@ pub mod api;
 pub mod tools;
 
 use anyhow::Result;
-use api::{ChatMessage, ChatRole, OllamaApiError, AIApi};
+use api::{AIApi, ChatMessage, ChatRole, OllamaApiError};
+use colored::*;
 use futures_util::stream::{Stream, StreamExt, once};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::boxed::Box;
 use std::io::{self, Write};
 use std::pin::Pin;
-use colored::*;
 
 use tools::ToolManager;
 
@@ -59,7 +59,11 @@ fn extract_tool_call_from_response(response_content: &str) -> Option<AiToolCall>
         match serde_yaml::from_str::<OuterToolCall>(&block_content) {
             Ok(outer_call) => Some(outer_call.tool_call),
             Err(e) => {
-                eprintln!("{} YAMLツール呼び出しのパースに失敗しました: {}", "エラー:".red().bold(), e);
+                eprintln!(
+                    "{} YAMLツール呼び出しのパースに失敗しました: {}",
+                    "エラー:".red().bold(),
+                    e
+                );
                 eprintln!("{} YAML内容:\n{}", "内容:".yellow(), block_content);
                 None
             }
@@ -68,7 +72,6 @@ fn extract_tool_call_from_response(response_content: &str) -> Option<AiToolCall>
         None
     }
 }
-
 
 pub struct AIAgent {
     api: AIApi,
@@ -83,6 +86,7 @@ impl AIAgent {
         let mut tool_manager = ToolManager::new();
 
         tool_manager.register_tool(tools::shell::ShellTool);
+        tool_manager.register_tool(tools::utils::SearchEngineTool);
 
         let default_prompt_template = include_str!("default-prompt.md").to_string();
 
@@ -145,7 +149,7 @@ impl AIAgent {
                 .api
                 .get_chat_completion_stream(full_messages_for_api)
                 .await?;
-            
+
             let mut full_ai_response_content = String::new();
             let mut tool_block_detected = false;
             let mut tool_yaml_buffer = String::new();
@@ -161,11 +165,14 @@ impl AIAgent {
                         if !tool_block_detected {
                             pending_display_content.push_str(&chunk);
                             // ツールブロックの開始を検知
-                            if pending_display_content.contains("---") && pending_display_content.contains("tool_call:") {
+                            if pending_display_content.contains("---")
+                                && pending_display_content.contains("tool_call:")
+                            {
                                 tool_block_detected = true;
-                                
+
                                 // ツールブロック開始までのテキストを表示
-                                let parts: Vec<&str> = pending_display_content.splitn(2, "---").collect();
+                                let parts: Vec<&str> =
+                                    pending_display_content.splitn(2, "---").collect();
                                 if parts.len() > 1 {
                                     print!("{}", parts[0].bold());
                                     io::stdout().flush().expect("stdout flush failed");
@@ -177,7 +184,11 @@ impl AIAgent {
                                     io::stdout().flush().expect("stdout flush failed");
                                     tool_yaml_buffer.push_str(&pending_display_content);
                                 }
-                                println!("\n{}", "  --- ツール呼び出しを検出しようとしています... ---".truecolor(128, 128, 128));
+                                println!(
+                                    "\n{}",
+                                    "  --- ツール呼び出しを検出しようとしています... ---"
+                                        .truecolor(128, 128, 128)
+                                );
                                 io::stdout().flush().expect("stdout flush failed");
                                 pending_display_content.clear(); // クリアしてツールYAMLバッファリングに専念
                             } else {
@@ -192,7 +203,7 @@ impl AIAgent {
                             // ツールブロックの終了マーカーを検知
                             if chunk.contains("---") && tool_yaml_buffer.contains("tool_call:") {
                                 // 最後の "---" が見つかったので、ストリームの読み込みを停止
-                                break; 
+                                break;
                             }
                         }
                     }
@@ -201,7 +212,7 @@ impl AIAgent {
                     }
                 }
             }
-            
+
             // AIの応答を履歴に追加 (ツール呼び出しの有無に関わらず、AIが出力した内容は履歴に残す)
             self.messages.push(ChatMessage {
                 role: ChatRole::Assistant,
@@ -221,16 +232,21 @@ impl AIAgent {
                         }
                     } else {
                         // 他のツールについては、デフォルトでツール名と整形されたJSON引数を表示
-                        format!("{} (引数: {})",
+                        format!(
+                            "{} (引数: {})",
                             call_tool.tool_name,
                             serde_json::to_string_pretty(&call_tool.parameters).unwrap_or_default()
                         )
                     };
-                    println!("\n{}", format!("--- ツール呼び出しを検出: {} ---", formatted_tool_call).truecolor(128, 128, 128));
+                    println!(
+                        "\n{}",
+                        format!("--- ツール呼び出しを検出: {} ---", formatted_tool_call)
+                            .truecolor(128, 128, 128)
+                    );
                     // 修正ここまで
-                    
+
                     io::stdout().flush().expect("stdout flush failed");
-                    
+
                     println!("{}", "  ツールを実行中...".truecolor(128, 128, 128));
                     io::stdout().flush().expect("stdout flush failed");
 
@@ -242,29 +258,45 @@ impl AIAgent {
                     {
                         Ok(tool_result) => {
                             println!("{}", "--- ツール実行結果 ---".truecolor(128, 128, 128));
-                            
+
                             if call_tool.tool_name == "shell" {
                                 let stdout = tool_result["stdout"].as_str().unwrap_or("");
                                 let stderr = tool_result["stderr"].as_str().unwrap_or("");
                                 let success = tool_result["success"].as_bool().unwrap_or(false);
 
                                 if !stdout.is_empty() {
-                                    println!("{} {}", "stdout:".green().bold(), stdout.truecolor(128, 128, 128));
+                                    println!(
+                                        "{} {}",
+                                        "stdout:".green().bold(),
+                                        stdout.truecolor(128, 128, 128)
+                                    );
                                 }
                                 if !stderr.is_empty() {
-                                    println!("{} {}", "stderr:".red().bold(), stderr.truecolor(128, 128, 128));
+                                    println!(
+                                        "{} {}",
+                                        "stderr:".red().bold(),
+                                        stderr.truecolor(128, 128, 128)
+                                    );
                                 }
                                 if !stdout.is_empty() || !stderr.is_empty() {
-                                    println!("{}", "---------------------".truecolor(128, 128, 128));
+                                    println!(
+                                        "{}",
+                                        "---------------------".truecolor(128, 128, 128)
+                                    );
                                 }
                                 if !success {
-                                    println!("{}", "コマンドがエラーコードを返しました。".red().bold());
+                                    println!(
+                                        "{}",
+                                        "コマンドがエラーコードを返しました。".red().bold()
+                                    );
                                 }
                             } else {
                                 // 他のツールの場合、デフォルトのJSON pretty print
                                 println!(
                                     "{}",
-                                    serde_json::to_string_pretty(&tool_result).unwrap_or_default().truecolor(128, 128, 128)
+                                    serde_json::to_string_pretty(&tool_result)
+                                        .unwrap_or_default()
+                                        .truecolor(128, 128, 128)
                                 );
                             }
 
@@ -305,7 +337,9 @@ impl AIAgent {
                                     "error": format!("{:?}", e)
                                 }
                             }))
-                            .unwrap_or_else(|_| "Failed to serialize tool error to YAML.".to_string());
+                            .unwrap_or_else(|_| {
+                                "Failed to serialize tool error to YAML.".to_string()
+                            });
 
                             self.messages.push(ChatMessage {
                                 role: ChatRole::System,
