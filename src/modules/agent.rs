@@ -86,7 +86,7 @@ impl AIAgent {
         let mut tool_manager = ToolManager::new();
 
         tool_manager.register_tool(tools::shell::ShellTool);
-        tool_manager.register_tool(tools::utils::SearchEngineTool);
+        tool_manager.register_tool(tools::www::search::SearchEngineTool);
 
         let default_prompt_template = include_str!("default-prompt.md").to_string();
 

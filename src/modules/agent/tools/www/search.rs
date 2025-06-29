@@ -1,5 +1,5 @@
 // src/modules/agent/tools/utils.rs
-use super::{Tool, ToolError};
+use super::super::{Tool, ToolError};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use www_search::{EngineType, SearchData, www_search}; // www-search クレートをインポート
