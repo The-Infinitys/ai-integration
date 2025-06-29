@@ -87,7 +87,7 @@ impl AIAgent {
 
         tool_manager.register_tool(tools::shell::ShellTool);
         tool_manager.register_tool(tools::www::search::SearchEngineTool);
-        // tool_manager.register_tool(tools::www::browse::WebPageBrowser);
+        tool_manager.register_tool(tools::www::browse::WebPageBrowser);
         let default_prompt_template = include_str!("default-prompt.md").to_string();
 
         AIAgent {
