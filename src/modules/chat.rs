@@ -77,8 +77,8 @@ impl ChatSession {
             }
 
             // シェルコマンドの処理
-            if user_input.starts_with('!') {
-                let command_and_args = &user_input[1..]; // '!' を除く
+            if let Some(command_and_args) = user_input.strip_prefix('!') {
+                // '!' を除く
                 println!("{}", "AI: ".green().bold()); // AIのプロンプトを先に表示
 
                 println!("{}", "  シェルコマンドを実行中...".yellow());

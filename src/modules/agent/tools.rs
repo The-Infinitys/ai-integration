@@ -40,6 +40,12 @@ pub struct ToolManager {
     tools: HashMap<String, Box<dyn Tool>>,
 }
 
+impl Default for ToolManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolManager {
     pub fn new() -> Self {
         ToolManager {

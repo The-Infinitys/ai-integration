@@ -261,7 +261,7 @@ impl AIAgent {
         if self
             .messages
             .last()
-            .map_or(false, |m| m.role == ChatRole::User)
+            .is_some_and(|m| m.role == ChatRole::User)
         {
             self.messages.pop();
         }
