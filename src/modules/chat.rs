@@ -2,7 +2,7 @@
 use crate::modules::agent::AIAgent;
 use std::io::{self, Write};
 use futures_util::StreamExt;
-use colored::*; // colored クレートをインポート
+use colored::*;
 
 pub struct ChatSession {
     agent: AIAgent,
@@ -66,7 +66,6 @@ impl ChatSession {
                     },
                     "/info" => {
                         println!("{}", "AIエージェント情報: (未実装)".yellow());
-                        // ここにAIエージェントの内部状態（メッセージ履歴など）を表示するロジックを追加できます
                         continue;
                     },
                     _ => {
@@ -77,13 +76,12 @@ impl ChatSession {
             }
 
             // シェルコマンドの処理
-            if let Some(command_and_args) = user_input.strip_prefix('!') {
-                // '!' を除く
+            if user_input.starts_with('!') {
+                let command_and_args = &user_input[1..]; // '!' を除く
                 println!("{}", "AI: ".green().bold()); // AIのプロンプトを先に表示
 
-                println!("{}", "  シェルコマンドを実行中...".yellow());
-                // shellツールに直接コマンドを渡す
-                // この部分は agent.rs に移動した方が良いかもしれませんが、まずはここで簡易的に実装
+                println!("{}", "  シェルコマンドを実行中...".truecolor(128, 128, 128)); // グレー
+                
                 let shell_result = self.agent.tool_manager.execute_tool(
                     "shell",
                     serde_json::json!({
@@ -95,9 +93,8 @@ impl ChatSession {
                 match shell_result {
                     Ok(result) => {
                         let result_str = serde_json::to_string_pretty(&result).unwrap_or_default();
-                        println!("{}", format!("  コマンド結果:\n{}", result_str).green());
-                        // シェルコマンドの結果をAIにフィードバック
-                        // ここでAIにフィードバックするためのChatMessageを作成し、agentのmessagesに追加
+                        println!("{}", format!("  コマンド結果:\n{}", result_str).truecolor(128, 128, 128)); // グレー
+                        
                         let feedback_message = format!(
 r#"---
 tool_result:
@@ -107,15 +104,12 @@ tool_result:
 ---"#,
                             result_str
                         );
-                        self.agent.add_ai_response(feedback_message); // AIの応答として追加し、次のAIのターンで考慮させる
+                        self.agent.add_ai_response(feedback_message);
 
-                        // シェルコマンドの結果を受けてAIに推論させるため、再度チャット処理を呼び出す
-                        // これは新しい入力としてではなく、既存のチャットコンテキストの継続として扱う
+                        println!("{}", "  AIがツール結果を考慮中...".normal()); // 思考（通常の文字）
+                        
                         // chat_with_tools内部でループが管理されているため、ユーザーはAIの次の出力を待つ
-                        println!("{}", "  AIがコマンド結果に基づいて推論中...".yellow());
-                        // chat_with_toolsのループがツール結果をシステムメッセージとして追加し、AIに次の応答を促すため、
-                        // ここでは単にAIの出力を待つことになる
-                        match self.agent.chat_with_tools("ツール実行結果に基づいて次のアクションをしてください。".to_string()).await { // ダミーのユーザー入力
+                        match self.agent.chat_with_tools("ツール実行結果に基づいて次のアクションをしてください。".to_string()).await {
                              Ok(mut stream) => {
                                 while let Some(chunk_result) = stream.next().await {
                                     match chunk_result {
@@ -138,22 +132,27 @@ tool_result:
                     },
                     Err(e) => {
                         eprintln!("{} {:?}", "シェルコマンド実行エラー:".red().bold(), e);
-                        // エラーもAIにフィードバックできますが、今回はユーザーに直接表示
                     }
                 }
-                continue; // シェルコマンド処理後は次のユーザー入力を待つ
+                continue;
             }
 
             // 通常のAIチャット処理
             print!("{}", "AI: ".green().bold());
             io::stdout().flush().map_err(|e| format!("出力のフラッシュに失敗しました: {}", e))?;
 
+            // AIの思考中表示 (AIが実際にツールを呼び出す前の初期フェーズ)
+            println!("{}", "  AIが思考中...".normal()); // 思考（通常の文字）
+
             match self.agent.chat_with_tools(user_input.to_string()).await {
                 Ok(mut stream) => {
+                    // ここで、AIからのストリームがツール呼び出しの場合はagent.rs側で処理され、
+                    // 最終的なテキスト応答だけが返ってくることを期待している。
+                    // ツール呼び出しが発生した場合、agent.rsのループ内で表示される。
                     while let Some(chunk_result) = stream.next().await {
                         match chunk_result {
                             Ok(chunk) => {
-                                print!("{}", chunk.bold());
+                                print!("{}", chunk.bold()); // AIの最終応答を太字で表示
                                 io::stdout().flush().map_err(|e| format!("出力のフラッシュに失敗しました: {}", e))?;
                             },
                             Err(e) => {
