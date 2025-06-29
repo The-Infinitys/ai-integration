@@ -1,37 +1,39 @@
 // src/modules/agent/api/ollama.rs
+use bytes::Bytes;
+use futures_util::StreamExt;
+use futures_util::stream::{Stream, TryStreamExt};
 use reqwest::{Client, Error as ReqwestError};
 use serde::{Deserialize, Serialize};
 use serde_json::Error as SerdeJsonError;
-use futures_util::stream::{Stream, TryStreamExt};
-use futures_util::StreamExt;
-use bytes::Bytes;
 
-use std::pin::Pin;
 use std::boxed::Box;
+use std::pin::Pin;
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)] // Default を追加
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
+    #[serde(default = "default_true")] // streamのデフォルト値をtrueに
     pub stream: bool,
     pub options: Option<serde_json::Value>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)] // Default を追加
 #[serde(rename_all = "lowercase")]
 pub enum ChatRole {
     User,
     System,
+    #[default] // Assistant をデフォルトにする
     Assistant,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)] // Default を追加
 pub struct ChatMessage {
     pub role: ChatRole,
     pub content: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Default)] // Default を追加 (レスポンスなので、主にテストやモック用)
 pub struct ChatCompletionResponse {
     pub model: String,
     pub created_at: String,
@@ -68,8 +70,8 @@ impl From<std::io::Error> for OllamaApiError {
     }
 }
 
-// Make the struct public
-pub struct OllamaApi { // <--- Added 'pub' here
+// OllamaApi には通常 Default を実装しない。newで初期化する情報が多いから。
+pub struct OllamaApi {
     client: Client,
     base_url: String,
     default_model: String,
@@ -78,7 +80,11 @@ pub struct OllamaApi { // <--- Added 'pub' here
 impl OllamaApi {
     pub fn new(base_url: String, default_model: String) -> Self {
         let client = Client::new();
-        OllamaApi { client, base_url, default_model }
+        OllamaApi {
+            client,
+            base_url,
+            default_model,
+        }
     }
 
     pub async fn list_models(&self) -> Result<serde_json::Value, OllamaApiError> {
@@ -90,7 +96,8 @@ impl OllamaApi {
     pub async fn get_chat_completion_stream(
         &self,
         messages: Vec<ChatMessage>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, OllamaApiError>> + Send>>, OllamaApiError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, OllamaApiError>> + Send>>, OllamaApiError>
+    {
         let request_body = ChatCompletionRequest {
             model: self.default_model.clone(),
             messages,
@@ -101,16 +108,18 @@ impl OllamaApi {
         };
 
         let url = format!("{}/api/chat", self.base_url);
-        let response = self.client
-            .post(&url)
-            .json(&request_body)
-            .send()
-            .await?;
+        let response = self.client.post(&url).json(&request_body).send().await?;
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown API error".to_string());
-            return Err(OllamaApiError::ApiError(format!("APIリクエストが失敗しました: ステータス {} - {}", status, error_text)));
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown API error".to_string());
+            return Err(OllamaApiError::ApiError(format!(
+                "APIリクエストが失敗しました: ステータス {} - {}",
+                status, error_text
+            )));
         }
 
         let body_stream = response.bytes_stream();
@@ -118,8 +127,9 @@ impl OllamaApi {
         let stream = body_stream
             .map_err(OllamaApiError::Reqwest)
             .and_then(|bytes: Bytes| async move {
-                let s = String::from_utf8(bytes.to_vec())
-                    .map_err(|e| OllamaApiError::StreamError(format!("Invalid UTF-8 sequence: {}", e)))?;
+                let s = String::from_utf8(bytes.to_vec()).map_err(|e| {
+                    OllamaApiError::StreamError(format!("Invalid UTF-8 sequence: {}", e))
+                })?;
 
                 let json_str = s.strip_prefix("data: ").unwrap_or(&s).trim();
 
@@ -136,9 +146,7 @@ impl OllamaApi {
                 }
                 Ok(None)
             })
-            .try_filter_map(|opt_content| async move {
-                Ok(opt_content)
-            })
+            .try_filter_map(|opt_content| async move { Ok(opt_content) })
             .boxed();
 
         Ok(stream)

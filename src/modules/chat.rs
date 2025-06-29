@@ -1,10 +1,10 @@
 // src/modules/chat.rs
-use crate::modules::agent::AIAgent; // AIAgentを直接利用
+use crate::modules::agent::AIAgent;
 use std::io::{self, Write};
-use futures_util::StreamExt; // StreamExtトレイトをインポート
+use futures_util::StreamExt;
 
 pub struct ChatSession {
-    agent: AIAgent, // AIApiではなくAIAgentを持つ
+    agent: AIAgent,
 }
 
 impl ChatSession {
@@ -17,9 +17,8 @@ impl ChatSession {
     pub async fn start_chat(&mut self) -> Result<(), String> {
         println!("チャットを開始します。'exit' と入力すると終了します。");
 
-        // Ollamaで使用可能なモデルを一覧表示
         println!("\n利用可能なOllamaモデル:");
-        match self.agent.list_models().await { // agentを介してモデルリストを取得
+        match self.agent.list_models().await {
             Ok(models) => {
                 if let Some(tags) = models["models"].as_array() {
                     for model in tags {
@@ -50,15 +49,13 @@ impl ChatSession {
             print!("AI: ");
             io::stdout().flush().map_err(|e| format!("出力のフラッシュに失敗しました: {}", e))?;
 
-            let mut full_ai_response = String::new();
-            // agentを介してチャットストリームを開始
-            match self.agent.chat_stream(user_input.to_string()).await {
+            // agent.chat_stream の代わりに agent.chat_with_tools を呼び出す
+            match self.agent.chat_with_tools(user_input.to_string()).await {
                 Ok(mut stream) => {
                     while let Some(chunk_result) = stream.next().await {
                         match chunk_result {
                             Ok(chunk) => {
                                 print!("{}", chunk);
-                                full_ai_response.push_str(&chunk);
                                 io::stdout().flush().map_err(|e| format!("出力のフラッシュに失敗しました: {}", e))?;
                             },
                             Err(e) => {
@@ -68,12 +65,10 @@ impl ChatSession {
                         }
                     }
                     println!(); // AIの応答の最後に改行
-                    // AIの最終応答をagentに通知して履歴に追加させる
-                    self.agent.add_ai_response(full_ai_response);
+                    // AIの最終応答は chat_with_tools 内で履歴に追加されるため、ここでは不要
                 },
                 Err(e) => {
                     eprintln!("\nAIとの通信エラー: {:?}", e);
-                    // エラー時はagentに最後のユーザーメッセージを削除させる
                     self.agent.revert_last_user_message();
                 }
             }
