@@ -75,16 +75,21 @@ impl ChatSession {
             }
 
             if user_input.starts_with('!') {
-                let command_and_args = &user_input[1..];
+                let command_line = &user_input[1..].trim(); // '!' を除き、空白をトリム
+
+                if command_line.is_empty() {
+                    println!("{}", "実行するシェルコマンドを入力してください。".red());
+                    continue;
+                }
                 
                 println!("{}", "AI: ".green().bold());
                 println!("{}", "  シェルコマンドを実行中...".truecolor(128, 128, 128));
                 
+                // shellツールに直接コマンドライン文字列を渡す
                 let shell_result = self.agent.tool_manager.execute_tool(
                     "shell",
                     serde_json::json!({
-                        "command": command_and_args.split_whitespace().next().unwrap_or(""),
-                        "args": command_and_args.split_whitespace().skip(1).collect::<Vec<&str>>()
+                        "command_line": command_line // 変更: command_line を単一の文字列として渡す
                     })
                 ).await;
 
@@ -93,16 +98,16 @@ impl ChatSession {
                         let result_str = serde_json::to_string_pretty(&result).unwrap_or_default();
                         println!("{}", format!("  コマンド結果:\n{}", result_str).truecolor(128, 128, 128));
                         
-                        let feedback_message = format!(
-r#"---
-tool_result:
-  tool_name: shell
-  result: |
-    {}
----"#,
-                            result_str
-                        );
-                        self.agent.add_ai_response(feedback_message);
+                        // YAMLでフィードバックメッセージを生成
+                        let feedback_message = serde_yaml::to_string(&serde_json::json!({
+                            "tool_result": {
+                                "tool_name": "shell",
+                                "result": result // result は既に Value なのでそのまま渡せる
+                            }
+                        })).unwrap_or_else(|_| "Failed to serialize tool result to YAML.".to_string());
+
+                        // プロンプトに合わせて`---`で囲む
+                        self.agent.add_ai_response(format!("---\n{}\n---", feedback_message));
 
                         println!("{}", "  AIがツール結果を考慮中...".normal());
                         
@@ -111,9 +116,7 @@ tool_result:
                                 while let Some(chunk_result) = stream.next().await {
                                     match chunk_result {
                                         Ok(chunk) => {
-                                            // Agent内部で表示されるため、ここでは主に最終的な改行を目的とする。
-                                            // ただし、もしAgentがテキストを返した場合のフォールバックとして残す。
-                                            print!("{}", chunk.bold()); 
+                                            print!("{}", chunk.bold());
                                             io::stdout().flush().map_err(|e| format!("出力のフラッシュに失敗しました: {}", e))?;
                                         },
                                         Err(e) => {
@@ -122,7 +125,7 @@ tool_result:
                                         }
                                     }
                                 }
-                                println!(); // 最終的な改行
+                                println!();
                             },
                             Err(e) => {
                                 eprintln!("\n{} {:?}", "AIとの通信エラー:".red().bold(), e);
@@ -146,9 +149,7 @@ tool_result:
                     while let Some(chunk_result) = stream.next().await {
                         match chunk_result {
                             Ok(chunk) => {
-                                // Agent内部で表示されるため、ここでは主に最終的な改行を目的とする。
-                                // ただし、もしAgentがテキストを返した場合のフォールバックとして残す。
-                                print!("{}", chunk.bold()); 
+                                print!("{}", chunk.bold());
                                 io::stdout().flush().map_err(|e| format!("出力のフラッシュに失敗しました: {}", e))?;
                             },
                             Err(e) => {
@@ -157,7 +158,7 @@ tool_result:
                             }
                         }
                     }
-                    println!(); // 最終的な改行
+                    println!();
                 },
                 Err(e) => {
                     eprintln!("\n{} {:?}", "AIとの通信エラー:".red().bold(), e);
