@@ -546,20 +546,15 @@ Error: {}
             self.chat_session
                 .add_assistant_message_to_history(content.clone())
                 .await;
-            self.messages.push(ChatMessage {
-                role: ChatRole::Assistant,
-                content,
-            });
             self.ai_response_buffer.clear();
         }
     }
 
     fn flush_tool_buffer_to_messages(&mut self) {
         if !self.tool_output_buffer.is_empty() {
-            self.messages.push(ChatMessage {
-                role: ChatRole::System,
-                content: self.tool_output_buffer.clone(),
-            });
+            let content = self.tool_output_buffer.clone();
+            // Tool output is already added to agent's history as System message in agent.rs
+            // So, we just clear the buffer here.
             self.tool_output_buffer.clear();
         }
     }
