@@ -188,28 +188,27 @@ impl AIAgent {
                 let formatted_prompt = default_prompt_template_clone
                     .replace("{{TOOLS_JSON_SCHEMA}}", &tool_manager_schemas.to_string());
 
-                // Ensure system message is at the beginning
-                if let Some(msg) = current_messages_for_api.get_mut(0) {
-                    if msg.role == ChatRole::System {
-                        msg.content = formatted_prompt;
-                    } else {
-                        current_messages_for_api.insert(
-                            0,
-                            ChatMessage {
-                                role: ChatRole::System,
-                                content: formatted_prompt,
-                            },
-                        );
-                    }
+                // ユーザーからの指示があるたびに、AIにツールの使い方を思い出させるためのシステムプロンプトを注入します。
+                // 既存のシステムメッセージを削除し、ユーザーの最新のメッセージの直前に新しいメッセージを挿入します。
+
+                // 既存のシステムメッセージをすべて削除して、重複を避ける
+                current_messages_for_api.retain(|msg| msg.role != ChatRole::System);
+
+                // ユーザーの最新のメッセージ（通常はリストの最後）の直前に、更新されたシステムプロンプトを挿入する
+                // これにより、AIが現在のタスクを処理する際に、ツールの説明が文脈的に最も近くなる
+                let insert_index = if current_messages_for_api.is_empty() {
+                    0
                 } else {
-                    current_messages_for_api.insert(
-                        0,
-                        ChatMessage {
-                            role: ChatRole::System,
-                            content: formatted_prompt,
-                        },
-                    );
-                }
+                    current_messages_for_api.len() - 1
+                };
+
+                current_messages_for_api.insert(
+                    insert_index,
+                    ChatMessage {
+                        role: ChatRole::System,
+                        content: formatted_prompt,
+                    },
+                );
 
                 let mut ai_response_stream = api_clone
                     .get_chat_completion_stream(current_messages_for_api.clone())
