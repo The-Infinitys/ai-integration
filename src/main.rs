@@ -1,5 +1,5 @@
-use crate::modules::cli::App as CliApp; // CLIアプリケーションのApp構造体をインポート
-use crate::modules::tui::TuiApp; // TUIアプリケーションのTuiApp構造体をインポート
+use crate::modules::chat::cli::App as CliApp; // CLIアプリケーションのApp構造体をインポート
+use crate::modules::chat::tui::TuiApp; // TUIアプリケーションのTuiApp構造体をインポート
 use anyhow::{Result, anyhow}; // anyhowクレートからのResult型とanyhow!マクロを使用
 use crossterm::execute;
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode}; // ターミナルを復元するためにインポート

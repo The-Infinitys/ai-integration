@@ -1,6 +1,6 @@
-// src/modules/tui.rs
 use crate::modules::agent::api::{ChatMessage, ChatRole};
-use crate::modules::agent::{AIAgent, AgentEvent}; // AgentEvent must derive Debug!
+use crate::modules::agent::{AIAgent, AgentEvent};
+use crate::modules::chat::ChatSession; // 親モジュールからChatSessionをインポート
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Position},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, ListState}, // ListStateを追加
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, ListState},
     Terminal,
 };
 use std::{
@@ -33,7 +33,7 @@ enum TuiEvent {
     ListModels(serde_json::Value),
     ModelSet,
     Reverted,
-    Quit, // アプリケーション終了シグナルを追加
+    Quit,
 }
 
 /// TUIアプリケーションの状態を表します。
@@ -41,19 +41,18 @@ pub struct TuiApp {
     chat_session: ChatSession,
     input: String,
     messages: Vec<ChatMessage>,
-    _scroll_offset: u16, // 現在使用されていません
+    _scroll_offset: u16,
     input_scroll: u16,
     should_quit: bool,
-    _command_mode: bool, // 現在使用されていません
+    _command_mode: bool,
     status_message: String,
     last_status_update: Instant,
     event_sender: mpsc::UnboundedSender<TuiEvent>,
     event_receiver: mpsc::UnboundedReceiver<TuiEvent>,
     ai_response_buffer: String,
     tool_output_buffer: String,
-    _last_user_input: Option<String>, // 現在使用されていません
     status_text_color: Color,
-    message_list_state: ListState, // メッセージリストのスクロール状態を管理
+    message_list_state: ListState,
 }
 
 impl TuiApp {
@@ -100,9 +99,8 @@ impl TuiApp {
             event_receiver,
             ai_response_buffer: String::new(),
             tool_output_buffer: String::new(),
-            _last_user_input: None,
             status_text_color: Color::White,
-            message_list_state: ListState::default(), // ListStateを初期化
+            message_list_state: ListState::default(),
         }
     }
 
@@ -116,10 +114,8 @@ impl TuiApp {
 
     async fn run_app_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
         let event_sender_clone = self.event_sender.clone();
-        // キーイベントを読み取り、チャネルに送信するタスクを生成
         let reader_task = tokio::spawn(async move {
             loop {
-                // Poll for event with a timeout, to allow other futures to run
                 if event::poll(Duration::from_millis(100)).unwrap() {
                     if let Event::Key(key) = event::read().unwrap() {
                         if key.kind == KeyEventKind::Press {
@@ -127,16 +123,13 @@ impl TuiApp {
                         }
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await; // CPU使用率を抑えるための短い遅延
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         });
 
-
         loop {
-            // UIを描画
             terminal.draw(|frame| self.ui(frame))?;
 
-            // イベントポーリングのタイムアウト期間を決定
             let timeout_duration = if self.status_message.is_empty() || self.last_status_update.elapsed() > Duration::from_secs(5) {
                 Duration::from_millis(100)
             } else {
@@ -144,7 +137,6 @@ impl TuiApp {
             };
 
             tokio::select! {
-                // チャネルからイベントを受信
                 event = self.event_receiver.recv() => {
                     if let Some(tui_event) = event {
                         match tui_event {
@@ -160,7 +152,6 @@ impl TuiApp {
                                     role: ChatRole::System,
                                     content: format!("Error: {}", e),
                                 });
-                                // エラーメッセージが追加されたので、リスト状態を更新してスクロール
                                 self.message_list_state.select(Some(self.messages.len() - 1));
                             }
                             TuiEvent::CommandExecuted => {
@@ -183,7 +174,6 @@ impl TuiApp {
                                     role: ChatRole::System,
                                     content: model_list_message,
                                 });
-                                // 新しいシステムメッセージが追加されたので、リスト状態を更新してスクロール
                                 self.message_list_state.select(Some(self.messages.len() - 1));
                                 self.set_status_message("Models listed.".to_string(), Color::Green);
                             }
@@ -192,7 +182,6 @@ impl TuiApp {
                             }
                             TuiEvent::Reverted => {
                                 self.set_status_message("Last turn reverted.".to_string(), Color::Green);
-                                // メッセージが削除された可能性があるので、リスト状態を調整
                                 if !self.messages.is_empty() {
                                     self.message_list_state.select(Some(self.messages.len() - 1));
                                 } else {
@@ -200,12 +189,11 @@ impl TuiApp {
                                 }
                             }
                             TuiEvent::Quit => {
-                                self.should_quit = true; // 終了シグナルを受け取ったらフラグを設定
+                                self.should_quit = true;
                             }
                         }
                     }
                 }
-                // タイムアウトでUIを更新したりステータスメッセージをクリアしたりする
                 _ = tokio::time::sleep(timeout_duration) => {
                     if !self.status_message.is_empty() && self.last_status_update.elapsed() > Duration::from_secs(5) {
                         self.status_message.clear();
@@ -214,14 +202,13 @@ impl TuiApp {
             }
 
             if self.should_quit {
-                reader_task.abort(); // イベントリーダータスクを中止
+                reader_task.abort();
                 break;
             }
         }
         Ok(())
     }
 
-    /// UIを描画します。
     fn ui(&mut self, frame: &mut ratatui::Frame) {
         let size = frame.area();
         let main_layout = Layout::default()
@@ -229,11 +216,9 @@ impl TuiApp {
             .constraints([Constraint::Min(1), Constraint::Length(3), Constraint::Length(1)])
             .split(size);
 
-        // チャットメッセージ表示領域
         let messages_block = Block::default().borders(Borders::ALL).title("Chat History");
         let mut list_items: Vec<ListItem> = Vec::new();
 
-        // 過去のメッセージを追加
         for message in &self.messages {
             let color = match message.role {
                 ChatRole::User => Color::Yellow,
@@ -262,7 +247,6 @@ impl TuiApp {
             }
         }
 
-        // リアルタイムのAI応答チャンクを追加
         if !self.ai_response_buffer.is_empty() {
             let wrapped_content = textwrap::wrap(&self.ai_response_buffer, (size.width as usize).saturating_sub(4));
             for (i, line) in wrapped_content.iter().enumerate() {
@@ -280,7 +264,6 @@ impl TuiApp {
             }
         }
 
-        // リアルタイムのツール出力チャンクを追加
         if !self.tool_output_buffer.is_empty() {
             let wrapped_content = textwrap::wrap(&self.tool_output_buffer, (size.width as usize).saturating_sub(4));
             for (i, line) in wrapped_content.iter().enumerate() {
@@ -302,9 +285,7 @@ impl TuiApp {
             .block(messages_block)
             .highlight_style(Style::default().bg(Color::DarkGray));
 
-        // メッセージリストの状態を更新して、常に最新のメッセージが選択されるようにする
         if !self.messages.is_empty() || !self.ai_response_buffer.is_empty() || !self.tool_output_buffer.is_empty() {
-            // 現在表示されるアイテムの総数を計算し、それを選択状態にする
             let total_display_items = self.messages.iter().map(|msg| textwrap::wrap(&msg.content, (size.width as usize).saturating_sub(4)).len()).sum::<usize>()
                 + if !self.ai_response_buffer.is_empty() { textwrap::wrap(&self.ai_response_buffer, (size.width as usize).saturating_sub(4)).len() } else { 0 }
                 + if !self.tool_output_buffer.is_empty() { textwrap::wrap(&self.tool_output_buffer, (size.width as usize).saturating_sub(4)).len() } else { 0 };
@@ -318,9 +299,8 @@ impl TuiApp {
             self.message_list_state.select(None);
         }
 
-        frame.render_stateful_widget(list, main_layout[0], &mut self.message_list_state); // render_stateful_widgetを使用
+        frame.render_stateful_widget(list, main_layout[0], &mut self.message_list_state);
 
-        // 入力領域
         let input_block = Block::default().borders(Borders::ALL).title("Input");
         let input_text = Paragraph::new(Text::from(self.input.as_str()))
             .style(Style::default().fg(Color::White))
@@ -329,15 +309,11 @@ impl TuiApp {
             .scroll((0, self.input_scroll));
         frame.render_widget(input_text, main_layout[1]);
 
-        // Unicode幅に基づいてカーソル位置を調整
-        // カーソルは入力文字列の末尾に、表示可能な領域内に配置されるべき
         let current_input_width = Span::from(&self.input).width() as u16;
         let cursor_x = main_layout[1].x + current_input_width.saturating_sub(self.input_scroll) + 1;
         let cursor_y = main_layout[1].y + 1;
         frame.set_cursor_position(Position::new(cursor_x, cursor_y));
 
-
-        // ステータスバー
         let status_block = Block::default().borders(Borders::NONE);
         let status_text = Paragraph::new(Text::from(self.status_message.as_str()))
             .style(Style::default().fg(self.status_text_color))
@@ -345,10 +321,9 @@ impl TuiApp {
         frame.render_widget(status_text, main_layout[2]);
     }
 
-    /// キーボード入力イベントを処理します。
     async fn handle_input_event(&mut self, key_event: KeyEvent, terminal_width: u16) -> Result<()> {
         if key_event.code == KeyCode::Esc {
-            let _ = self.event_sender.send(TuiEvent::Quit); // Quitイベントを送信
+            let _ = self.event_sender.send(TuiEvent::Quit);
             return Ok(());
         }
 
@@ -365,73 +340,45 @@ impl TuiApp {
                 if input_copy.starts_with('/') {
                     self.handle_command(&input_copy).await;
                 } else {
-                    // ユーザーのメッセージをTUIの表示履歴にすぐにプッシュ
                     self.messages.push(ChatMessage {
                         role: ChatRole::User,
                         content: input_copy.clone(),
                     });
-                    // ユーザーメッセージが追加されたので、リスト状態を更新してスクロール
                     self.message_list_state.select(Some(self.messages.len() - 1));
 
                     self.set_status_message("Sending message to AI...".to_string(), Color::Yellow);
-                    self._last_user_input = Some(input_copy.clone()); // _last_user_input は現在未使用
+
+                    self.chat_session.add_user_message(input_copy).await;
 
                     let sender = self.event_sender.clone();
-                    let agent_arc_for_spawn = Arc::clone(&self.chat_session.agent);
+                    let mut chat_session = self.chat_session.start_realtime_chat().await.unwrap(); // エラーハンドリングを改善すべき
 
                     tokio::spawn(async move {
-                        let mut agent_locked_in_spawn = agent_arc_for_spawn.lock().await;
-
-                        // Add the user message to the agent's history *before* starting the chat
-                        // This ensures the AI receives the complete context including the latest user message.
-                        agent_locked_in_spawn.add_message_to_history(ChatMessage {
-                            role: ChatRole::User,
-                            content: input_copy,
-                        });
-
-                        // Now, clone the messages *after* the user message has been added
-                        let current_turn_messages = agent_locked_in_spawn.messages.clone();
-                        drop(agent_locked_in_spawn); // Release the lock before the potentially long-running chat operation
-
-                        match AIAgent::chat_with_tools_realtime(agent_arc_for_spawn.clone(), current_turn_messages).await {
-                            Ok(mut stream) => {
-                                while let Some(event_result) = stream.next().await {
-                                    match event_result {
-                                        Ok(event) => {
-                                            let _ = sender.send(TuiEvent::AgentEvent(event));
-                                        }
-                                        Err(e) => {
-                                            let _ = sender.send(TuiEvent::Error(format!("Stream Error: {}", e)));
-                                            break; // エラーが発生した場合はストリーミングを停止
-                                        }
-                                    }
+                        while let Some(event_result) = chat_session.next().await {
+                            match event_result {
+                                Ok(event) => {
+                                    let _ = sender.send(TuiEvent::AgentEvent(event));
                                 }
-                                // ストリーミングが完了したことを通知するイベント
-                                let _ = sender.send(TuiEvent::AgentEvent(AgentEvent::ToolResult(
-                                    "StreamingComplete".to_string(),
-                                    serde_json::Value::String("".to_string()),
-                                )));
-                            }
-                            Err(e) => {
-                                let _ = sender.send(TuiEvent::Error(format!("Chat Init Error: {}", e)));
+                                Err(e) => {
+                                    let _ = sender.send(TuiEvent::Error(format!("Stream Error: {}", e)));
+                                    break;
+                                }
                             }
                         }
+                        let _ = sender.send(TuiEvent::AgentEvent(AgentEvent::ToolResult(
+                            "StreamingComplete".to_string(),
+                            serde_json::Value::String("".to_string()),
+                        )));
                     });
                 }
             }
             KeyCode::Backspace => {
                 self.input.pop();
-                // Adjust scroll offset if the cursor goes out of bounds to the left
-                // Ensure the input_scroll doesn't exceed the actual rendered width of the input
                 let rendered_input_width = Span::from(&self.input).width() as u16;
-                let input_area_width = terminal_width.saturating_sub(4); // 境界線などを考慮
-
-                // カーソルが入力フィールドの左端を超えないようにスクロールオフセットを調整
+                let input_area_width = terminal_width.saturating_sub(4);
                 if self.input_scroll > 0 && rendered_input_width < self.input_scroll + input_area_width {
-                    // スクロール位置を、入力の実際の幅から入力フィールドの幅を引いた位置に設定
-                    // これにより、バックスペースで入力が短くなった際に、残りの入力が左端に寄るように見える
                     self.input_scroll = rendered_input_width.saturating_sub(input_area_width.saturating_sub(1));
-                    if self.input_scroll > rendered_input_width { // 実際のコンテンツ幅を超えないように調整
+                    if self.input_scroll > rendered_input_width {
                         self.input_scroll = 0;
                     }
                 }
@@ -440,7 +387,6 @@ impl TuiApp {
                 self.input_scroll = self.input_scroll.saturating_sub(1);
             }
             KeyCode::Right => {
-                // Unicode幅を考慮して、現在のスクロール位置が入力文字列の実際の幅を超えないようにする
                 if (self.input_scroll as usize) < Span::from(&self.input).width() {
                     self.input_scroll += 1;
                 }
@@ -448,11 +394,7 @@ impl TuiApp {
             KeyCode::Char(c) => {
                 self.input.push(c);
                 let input_width_in_chars = Span::from(&self.input).width() as u16;
-                let input_field_display_width = terminal_width.saturating_sub(4); // 境界線などを考慮
-
-                // If the current cursor position (which is at the end of the input string)
-                // is beyond what's currently visible in the input field, adjust scroll.
-                // 入力文字列の末尾が入力フィールドの表示幅を超えたら、スクロールオフセットを調整
+                let input_field_display_width = terminal_width.saturating_sub(4);
                 if input_width_in_chars.saturating_sub(self.input_scroll) >= input_field_display_width {
                     self.input_scroll = input_width_in_chars.saturating_sub(input_field_display_width.saturating_sub(1));
                 }
@@ -462,25 +404,21 @@ impl TuiApp {
         Ok(())
     }
 
-    /// コマンドを処理します。
     async fn handle_command(&mut self, command: &str) {
         if command.eq_ignore_ascii_case("/exit") {
-            let _ = self.event_sender.send(TuiEvent::Quit); // TuiEvent::Quitを送信
+            let _ = self.event_sender.send(TuiEvent::Quit);
         } else if command.starts_with("/model ") {
             let model_name = command.trim_start_matches("/model ").trim().to_string();
-            let sender = self.event_sender.clone();
-            let mut agent_locked = self.chat_session.agent.lock().await;
-            agent_locked.set_model(model_name.clone());
-            self.chat_session.current_model = model_name;
-            let _ = sender.send(TuiEvent::ModelSet);
-            let _ = sender.send(TuiEvent::CommandExecuted);
+            if self.chat_session.set_model(model_name).await.is_ok() {
+                let _ = self.event_sender.send(TuiEvent::ModelSet);
+            }
+            let _ = self.event_sender.send(TuiEvent::CommandExecuted);
         } else if command.eq_ignore_ascii_case("/list models") {
             self.set_status_message("Listing models...".to_string(), Color::Yellow);
             let sender = self.event_sender.clone();
-            let chat_session_clone = Arc::clone(&self.chat_session.agent);
+            let models = self.chat_session.list_models().await;
             tokio::spawn(async move {
-                let agent_locked = chat_session_clone.lock().await;
-                match agent_locked.list_available_models().await {
+                match models {
                     Ok(models) => {
                         let _ = sender.send(TuiEvent::ListModels(models));
                     }
@@ -491,50 +429,30 @@ impl TuiApp {
                 let _ = sender.send(TuiEvent::CommandExecuted);
             });
         } else if command.eq_ignore_ascii_case("/revert") {
-            let sender = self.event_sender.clone();
-            let mut agent_locked = self.chat_session.agent.lock().await;
-            agent_locked.revert_last_user_message();
-            // TUIのメッセージ表示もロールバック
-            self.messages.pop(); // ユーザーメッセージを削除
-            while let Some(msg) = self.messages.last() {
-                if msg.role != ChatRole::User { // AI応答やツール出力を削除
-                    self.messages.pop();
-                } else {
-                    break; // 最後のユーザーメッセージに到達したら停止
-                }
-            }
-            let _ = sender.send(TuiEvent::Reverted);
-            let _ = sender.send(TuiEvent::CommandExecuted);
+            self.chat_session.revert_last_turn().await;
+            self.messages = self.chat_session.get_messages().await;
+            let _ = self.event_sender.send(TuiEvent::Reverted);
+            let _ = self.event_sender.send(TuiEvent::CommandExecuted);
         } else {
             self.set_status_message(format!("Unknown command: {}", command), Color::Red);
             let _ = self.event_sender.send(TuiEvent::CommandExecuted);
         }
     }
 
-    /// エージェントイベントを処理します。
     async fn handle_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::AiResponseChunk(chunk) => {
-                // AI応答チャンクをバッファに追加。これがリアルタイム表示の元となる
                 self.ai_response_buffer.push_str(&chunk);
                 self.set_status_message("AI is typing...".to_string(), Color::LightBlue);
             }
-            AgentEvent::AddMessageToHistory(_message) => {
-                // AgentEvent::AddMessageToHistoryはエージェントの内部履歴更新を示すものであり、
-                // TUIの表示更新はAiResponseChunkとStreamingCompleteによって行われるため、
-                // ここで直接TUIのmessagesにAIやツールのメッセージを追加する必要はありません。
-                // ユーザーメッセージはhandle_input_eventで直接messagesに追加されます。
-                // したがって、ここでは何もしません。
-            }
+            AgentEvent::AddMessageToHistory(_) => {}
             AgentEvent::ToolCallDetected(tool_call) => {
-                // ツールコール検出時、AI応答バッファにたまっていた内容があれば、確定されたAIメッセージとして追加
                 if !self.ai_response_buffer.is_empty() {
                     self.messages.push(ChatMessage {
                         role: ChatRole::Assistant,
                         content: self.ai_response_buffer.clone(),
                     });
                     self.ai_response_buffer.clear();
-                    // 新しいAIメッセージが追加されたので、リスト状態を更新してスクロール
                     self.message_list_state.select(Some(self.messages.len() - 1));
                 }
                 self.tool_output_buffer.push_str(&format!(
@@ -549,27 +467,24 @@ impl TuiApp {
             }
             AgentEvent::ToolResult(tool_name, result) => {
                 if tool_name == "StreamingComplete" {
-                    // AI応答バッファに残っている内容があれば、Assistantメッセージとして追加し、バッファをクリア
                     if !self.ai_response_buffer.is_empty() {
+                        self.chat_session.add_assistant_message_to_history(self.ai_response_buffer.clone()).await;
                         self.messages.push(ChatMessage {
                             role: ChatRole::Assistant,
                             content: self.ai_response_buffer.clone(),
                         });
                         self.ai_response_buffer.clear();
                     }
-                    // ツール出力バッファに残っている内容があれば、Systemメッセージとして追加し、バッファをクリア
                     if !self.tool_output_buffer.is_empty() {
                          self.messages.push(ChatMessage {
-                            role: ChatRole::System, // ChatRole::Tool の代わりに System を使用
+                            role: ChatRole::System,
                             content: self.tool_output_buffer.clone(),
                         });
                         self.tool_output_buffer.clear();
                     }
                     self.set_status_message("AI response complete.".to_string(), Color::Green);
-                    // ストリーミング完了時に最終メッセージが追加されたので、リスト状態を更新してスクロール
                     self.message_list_state.select(Some(self.messages.len() - 1));
                 } else {
-                    // 特定のツール結果を追加（リアルタイム表示用）
                     self.tool_output_buffer.push_str(&format!(
                         "\n--- Tool Result ({}) ---\n{}\n---------------------------\n",
                         tool_name,
@@ -588,22 +503,19 @@ impl TuiApp {
             AgentEvent::Thinking(message) => {
                 self.set_status_message(format!("AI thinking: {}", message), Color::Magenta);
             }
-            AgentEvent::UserMessageAdded => { /* これはhandle_input_eventで既に処理されている */ }
+            AgentEvent::UserMessageAdded => {}
             AgentEvent::AttemptingToolDetection => {
                 self.set_status_message("Attempting tool detection...".to_string(), Color::Yellow);
-                // ツール検出前にAI応答バッファの内容があれば、確定されたAIメッセージとして追加
                 if !self.ai_response_buffer.is_empty() {
                     self.messages.push(ChatMessage {
                         role: ChatRole::Assistant,
                         content: self.ai_response_buffer.clone(),
                     });
                     self.ai_response_buffer.clear();
-                    // 新しいAIメッセージが追加されたので、リスト状態を更新してスクロール
                     self.message_list_state.select(Some(self.messages.len() - 1));
                 }
             }
             AgentEvent::PendingDisplayContent(content) => {
-                // 表示待ちコンテンツをバッファに追加
                 self.ai_response_buffer.push_str(&content);
             }
             AgentEvent::ToolBlockParseWarning(yaml_content) => {
@@ -623,7 +535,6 @@ impl TuiApp {
         }
     }
 
-    /// ステータスメッセージを設定し、更新時刻を記録します。
     fn set_status_message(&mut self, message: String, color: Color) {
         self.status_message = message;
         self.status_text_color = color;
@@ -631,26 +542,6 @@ impl TuiApp {
     }
 }
 
-/// AIエージェントとの単一のチャットセッションを表します。
-pub struct ChatSession {
-    agent: Arc<Mutex<AIAgent>>,
-    _session_messages: Vec<ChatMessage>, // 現在使用されていません
-    pub current_model: String,
-}
-
-impl ChatSession {
-    /// 新しいチャットセッションを作成します。
-    pub fn new(base_url: String, default_model: String) -> Self {
-        let agent = Arc::new(Mutex::new(AIAgent::new(base_url, default_model.clone())));
-        ChatSession {
-            agent,
-            _session_messages: vec![],
-            current_model: default_model,
-        }
-    }
-}
-
-// ターミナルのセットアップと復元のためのヘルパー関数
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
