@@ -1,4 +1,3 @@
-use crate::modules::agent::api::ChatRole;
 use crate::modules::agent::AgentEvent;
 use crate::modules::chat::ChatSession; // 親モジュールからChatSessionをインポート
 use anyhow::Result;
@@ -189,17 +188,15 @@ impl App {
                         "ストリームエラー".red().bold(),
                         e.to_string().red()
                     );
-                    return Err(e.into());
+                    return Err(e);
                 }
             }
         }
 
-        if !tool_output_received_this_turn {
-            if !full_ai_response.is_empty() {
-                self.chat_session
-                    .add_assistant_message_to_history(full_ai_response)
-                    .await;
-            }
+        if !tool_output_received_this_turn && !full_ai_response.is_empty() {
+            self.chat_session
+                .add_assistant_message_to_history(full_ai_response)
+                .await;
         }
 
         Ok(())

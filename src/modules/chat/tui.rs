@@ -1,5 +1,5 @@
 use crate::modules::agent::api::{ChatMessage, ChatRole};
-use crate::modules::agent::{AIAgent, AgentEvent};
+use crate::modules::agent::AgentEvent;
 use crate::modules::chat::ChatSession; // 親モジュールからChatSessionをインポート
 use anyhow::Result;
 use crossterm::{
@@ -18,10 +18,9 @@ use ratatui::{
 };
 use std::{
     io::{self, Stdout},
-    sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use textwrap;
 
 /// TUIが非同期操作を処理するためのカスタムイベントタイプ。

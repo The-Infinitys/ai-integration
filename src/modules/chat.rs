@@ -4,7 +4,7 @@ pub mod cli;
 use crate::modules::agent::api::{ChatMessage, ChatRole};
 use crate::modules::agent::{AIAgent, AgentEvent};
 use anyhow::Result;
-use futures_util::{stream::BoxStream, StreamExt, TryStreamExt};
+use futures_util::{stream::BoxStream, TryStreamExt};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
