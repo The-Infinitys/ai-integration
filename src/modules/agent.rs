@@ -247,7 +247,7 @@ impl AIAgent {
         OllamaApiError,
     > {
         let agent_stream = async_stream::stream! {
-            let mut agent_locked = self_arc_mutex.lock().await;
+            """            let mut agent_locked = self_arc_mutex.lock().await;
             let mut loop_messages = agent_locked.messages.clone();
 
             // --- システムプロンプトを注入 (最初の一度のみ) ---
@@ -263,7 +263,7 @@ impl AIAgent {
 
                 let system_message = ChatMessage {
                     role: ChatRole::System,
-                    content: formatted_prompt,
+                    content: formatted: formatted_prompt,
                 };
 
                 // ユーザーメッセージの直前、またはリストの先頭に挿入
