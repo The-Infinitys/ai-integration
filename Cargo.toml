@@ -10,10 +10,13 @@ async-stream = "0.3.6"
 async-trait = "0.1.88"
 bytes = "1.10.1"
 colored = "3.0.0"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
 futures-util = "0.3.31"
+ratatui = { version = "0.29.0", features = ["all-widgets"] }
 reqwest = { version = "0.12.20", features = ["json", "stream"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 serde_yaml = "0.9.34"
+textwrap = "0.16.2"
 tokio = { version = "1.45.1", features = ["full"] }
 www-search = { version = "1.0.0", git = "https://github.com/The-Infinitys/www-search.git" }
