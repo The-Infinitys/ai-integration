@@ -1,5 +1,6 @@
 // src/modules/agent/tools.rs (previously src/modules/tools.rs, assuming it was moved/renamed)
 pub mod shell;
+pub mod files;
 pub mod www;
 use async_trait::async_trait;
 use std::collections::HashMap;

@@ -25,6 +25,7 @@ pub struct AiToolCall {
 
 /// エージェントからチャットセッションに送られるイベントの種類
 // #[derive(Debug)]
+#[allow(dead_code)]
 pub enum AgentEvent {
     /// AIの応答のチャンク（通常のテキスト）
     AiResponseChunk(String),
@@ -140,6 +141,9 @@ impl AIAgent {
         tool_manager.register_tool(tools::shell::ShellTool);
         tool_manager.register_tool(tools::www::search::SearchEngineTool);
         tool_manager.register_tool(tools::www::browse::WebPageBrowser);
+        tool_manager.register_tool(tools::files::info::InfoTool);
+        tool_manager.register_tool(tools::files::read::ReadTool);
+        tool_manager.register_tool(tools::files::write::WriteTool);
         let default_prompt_template = include_str!("default-prompt.md").to_string();
 
         AIAgent {

@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 
 /// AIエージェントとの単一のチャットセッションを表します。
 /// この構造体はUIから独立しており、チャットの状態管理とAIとの対話ロジックに責任を持ちます。
+#[derive(Clone)]
 pub struct ChatSession {
     agent: Arc<Mutex<AIAgent>>,
     session_messages: Vec<ChatMessage>,
