@@ -1,8 +1,13 @@
-// src/modules/tools.rs
+// src/modules/agent/tools.rs (previously src/modules/tools.rs, assuming it was moved/renamed)
 pub mod shell;
 pub mod www;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::io::Error as IoError;
+// Removed: use serde_json::Error as SerdeJsonError; // Unused import
+
+// Import OllamaApiError so we can use it in ToolError
+use crate::modules::agent::api::OllamaApiError; 
 
 // Tool のエラー型
 #[derive(Debug)]
@@ -12,11 +17,44 @@ pub enum ToolError {
     ExecutionError(String),
     SerializationError(String),
     DeserializationError(String),
+    Io(IoError),
+    OllamaApi(OllamaApiError),
 }
+
+// Implement Display for better error messages when printed
+impl std::fmt::Display for ToolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ToolError::ShellError(msg) => write!(f, "Shell error: {}", msg),
+            ToolError::NotFound(msg) => write!(f, "Tool not found: {}", msg),
+            ToolError::ExecutionError(msg) => write!(f, "Tool execution error: {}", msg),
+            ToolError::SerializationError(msg) => write!(f, "Tool serialization error: {}", msg),
+            ToolError::DeserializationError(msg) => write!(f, "Tool deserialization error: {}", msg),
+            ToolError::Io(e) => write!(f, "Tool IO error: {}", e),
+            ToolError::OllamaApi(e) => write!(f, "Ollama API error in tool context: {}", e),
+        }
+    }
+}
+
+// Implement std::error::Error for ToolError
+impl std::error::Error for ToolError {}
+
 
 impl From<serde_json::Error> for ToolError {
     fn from(err: serde_json::Error) -> Self {
-        ToolError::SerializationError(err.to_string()) // または DeserializationError
+        ToolError::SerializationError(err.to_string()) 
+    }
+}
+
+impl From<IoError> for ToolError {
+    fn from(err: IoError) -> Self {
+        ToolError::Io(err)
+    }
+}
+
+impl From<OllamaApiError> for ToolError {
+    fn from(err: OllamaApiError) -> Self {
+        ToolError::OllamaApi(err)
     }
 }
 

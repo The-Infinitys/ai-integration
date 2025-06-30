@@ -9,31 +9,30 @@ use serde_json::Error as SerdeJsonError;
 use std::boxed::Box;
 use std::pin::Pin;
 
-#[derive(Serialize, Default)] // Default を追加
+#[derive(Serialize, Default)]
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
-    #[serde(default = "default_true")] // streamのデフォルト値をtrueに
-    pub stream: bool,
+    pub stream: bool, // default_true関数は削除されました
     pub options: Option<serde_json::Value>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)] // Default を追加
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ChatRole {
     User,
     System,
-    #[default] // Assistant をデフォルトにする
+    #[default]
     Assistant,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)] // Default を追加
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct ChatMessage {
     pub role: ChatRole,
     pub content: String,
 }
 
-#[derive(Deserialize, Debug, Default)] // Default を追加 (レスポンスなので、主にテストやモック用)
+#[derive(Deserialize, Debug, Default)]
 pub struct ChatCompletionResponse {
     pub model: String,
     pub created_at: String,
@@ -59,7 +58,7 @@ impl From<ReqwestError> for OllamaApiError {
 }
 
 impl From<SerdeJsonError> for OllamaApiError {
-    fn from(err: SerdeJsonError) -> Self {
+    fn from(err: serde_json::Error) -> Self {
         OllamaApiError::SerdeJson(err)
     }
 }
@@ -70,7 +69,22 @@ impl From<std::io::Error> for OllamaApiError {
     }
 }
 
-// OllamaApi には通常 Default を実装しない。newで初期化する情報が多いから。
+impl std::fmt::Display for OllamaApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OllamaApiError::Reqwest(e) => write!(f, "Reqwest error: {}", e),
+            OllamaApiError::SerdeJson(e) => write!(f, "JSON parsing error: {}", e),
+            OllamaApiError::ApiError(msg) => write!(f, "API error: {}", msg),
+            OllamaApiError::IoError(e) => write!(f, "IO error: {}", e),
+            OllamaApiError::StreamError(msg) => write!(f, "Stream error: {}", msg),
+            OllamaApiError::NoMessageFound => write!(f, "No message content found in API response"),
+        }
+    }
+}
+
+impl std::error::Error for OllamaApiError {}
+
+#[derive(Debug, Clone)]
 pub struct OllamaApi {
     client: Client,
     base_url: String,
@@ -85,6 +99,10 @@ impl OllamaApi {
             base_url,
             default_model,
         }
+    }
+
+    pub fn set_model(&mut self, model_name: String) {
+        self.default_model = model_name;
     }
 
     pub async fn list_models(&self) -> Result<serde_json::Value, OllamaApiError> {
@@ -131,7 +149,9 @@ impl OllamaApi {
                     OllamaApiError::StreamError(format!("Invalid UTF-8 sequence: {}", e))
                 })?;
 
-                let json_str = s.strip_prefix("data: ").unwrap_or(&s).trim();
+                // Ollamaのストリームには "data: " プレフィックスが付与される場合があります
+                let trimmed_s = s.trim();
+                let json_str = trimmed_s.strip_prefix("data: ").unwrap_or(trimmed_s);
 
                 if json_str == "[DONE]" {
                     return Ok(None);

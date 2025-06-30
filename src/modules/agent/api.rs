@@ -3,13 +3,13 @@ pub mod ollama;
 
 pub use ollama::{ChatMessage, ChatRole, OllamaApiError};
 
-// Corrected import: OllamaApi is now public in ollama module
-use ollama::OllamaApi; // <--- This line is correct now
+use ollama::OllamaApi;
 
 use futures_util::stream::Stream;
 use std::pin::Pin;
 use std::boxed::Box;
 
+#[derive(Debug, Clone)]
 pub struct AIApi {
     ollama_api: OllamaApi,
 }
@@ -18,6 +18,10 @@ impl AIApi {
     pub fn new(base_url: String, default_model: String) -> Self {
         let ollama_api = OllamaApi::new(base_url, default_model);
         Self { ollama_api }
+    }
+
+    pub fn set_model(&mut self, model_name: String) {
+        self.ollama_api.set_model(model_name);
     }
 
     pub async fn list_models(&self) -> Result<serde_json::Value, OllamaApiError> {

@@ -1,171 +1,278 @@
 // src/modules/chat.rs
-use crate::modules::agent::AIAgent;
-use std::io::{self, Write};
-use futures_util::StreamExt;
+use crate::modules::agent::api::{ChatMessage, ChatRole};
+use crate::modules::agent::{AIAgent, AgentEvent};
+use anyhow::Result;
 use colored::*;
+use futures_util::stream::StreamExt;
+use std::io::{self, Write};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
+/// AIエージェントとの単一のチャットセッションを表します。
 pub struct ChatSession {
-    agent: AIAgent,
+    agent: Arc<Mutex<AIAgent>>, // tokio::sync::Mutexを使用
+    session_messages: Vec<ChatMessage>,
+    current_model: String,
 }
 
 impl ChatSession {
-    pub fn new(agent: AIAgent) -> Self {
+    /// 新しいチャットセッションを作成します。
+    pub fn new(base_url: String, default_model: String) -> Self {
+        let agent = Arc::new(Mutex::new(AIAgent::new(base_url, default_model.clone())));
         ChatSession {
             agent,
+            session_messages: vec![],
+            current_model: default_model,
         }
     }
 
-    pub async fn start_chat(&mut self) -> Result<(), String> {
-        println!("{}", "チャットを開始します。".green().bold());
-        println!("{}", "スラッシュコマンド: /exit, /help, /info".cyan());
-        println!("{}", "シェルコマンド: !<command>".cyan());
+    /// ユーザーメッセージをセッション履歴に追加します。
+    pub async fn add_user_message(&mut self, content: String) {
+        let mut agent_locked = self.agent.lock().await;
+        let user_message = ChatMessage {
+            role: ChatRole::User,
+            content,
+        };
+        agent_locked.add_message_to_history(user_message.clone());
+        self.session_messages.push(user_message);
+        // ★修正：main.rs側でユーザー入力を表示するように変更したため、ここでは表示しない
+        // println!("\n{}: {}", "あなた".blue().bold(), self.session_messages.last().unwrap().content);
+        // io::stdout().flush().unwrap();
+    }
 
-        println!("\n{}", "利用可能なOllamaモデル:".purple().bold());
-        match self.agent.list_available_models().await {
-            Ok(models) => {
-                if let Some(tags) = models["models"].as_array() {
-                    for model in tags {
-                        if let Some(name) = model["name"].as_str() {
-                            println!("- {}", name.yellow());
-                        }
-                    }
-                }
-            },
-            Err(e) => eprintln!("{} {:?}", "モデル一覧の取得に失敗しました:".red().bold(), e),
-        }
-        println!("\n");
+    /// ツール実行を伴うリアルタイムチャットセッションを開始および管理します。
+    pub async fn start_realtime_chat(&mut self) -> Result<()> {
+        let mut full_ai_response = String::new();
+        let mut current_turn_messages = self.session_messages.clone();
 
         loop {
-            print!("{}", "あなた: ".blue().bold());
-            io::stdout().flush().map_err(|e| format!("出力のフラッシュに失敗しました: {}", e))?;
+            let agent_arc_clone = self.agent.clone();
 
-            let mut user_input = String::new();
-            io::stdin().read_line(&mut user_input)
-                .map_err(|e| format!("入力の読み込みに失敗しました: {}", e))?;
-            let user_input = user_input.trim();
+            let mut chat_stream =
+                AIAgent::chat_with_tools_realtime(agent_arc_clone, current_turn_messages.clone())
+                    .await?;
 
-            if user_input.is_empty() {
-                continue;
-            }
+            full_ai_response.clear();
+            let mut pending_display = String::new();
+            let mut tool_output_received_this_turn = false;
 
-            if user_input.starts_with('/') {
-                match user_input {
-                    "/exit" => {
-                        println!("{}", "チャットを終了します。".green());
-                        break;
-                    },
-                    "/help" => {
-                        println!("{}", "\n--- ヘルプ ---".green().bold());
-                        println!("{}", "  /exit       : チャットを終了します。".cyan());
-                        println!("{}", "  /help       : このヘルプメッセージを表示します。".cyan());
-                        println!("{}", "  /info       : エージェントの現在の状態を表示します。(未実装)".cyan());
-                        println!("{}", "  !<command>  : シェルコマンドを実行し、その結果をAIに渡します。例: !ls -l".cyan());
-                        println!("{}", "---------------".green().bold());
-                        continue;
-                    },
-                    "/info" => {
-                        println!("{}", "AIエージェント情報: (未実装)".yellow());
-                        continue;
-                    },
-                    _ => {
-                        println!("{}", "不明なコマンドです。/help で利用可能なコマンドを確認してください。".red());
-                        continue;
-                    }
-                }
-            }
-
-            if user_input.starts_with('!') {
-                let command_line = &user_input[1..].trim(); // '!' を除き、空白をトリム
-
-                if command_line.is_empty() {
-                    println!("{}", "実行するシェルコマンドを入力してください。".red());
-                    continue;
-                }
-                
-                println!("{}", "AI: ".green().bold());
-                println!("{}", "  シェルコマンドを実行中...".truecolor(128, 128, 128));
-                
-                // shellツールに直接コマンドライン文字列を渡す
-                let shell_result = self.agent.tool_manager.execute_tool(
-                    "shell",
-                    serde_json::json!({
-                        "command_line": command_line // 変更: command_line を単一の文字列として渡す
-                    })
-                ).await;
-
-                match shell_result {
-                    Ok(result) => {
-                        let result_str = serde_json::to_string_pretty(&result).unwrap_or_default();
-                        println!("{}", format!("  コマンド結果:\n{}", result_str).truecolor(128, 128, 128));
-                        
-                        // YAMLでフィードバックメッセージを生成
-                        let feedback_message = serde_yaml::to_string(&serde_json::json!({
-                            "tool_result": {
-                                "tool_name": "shell",
-                                "result": result // result は既に Value なのでそのまま渡せる
+            while let Some(event_result) = chat_stream.next().await {
+                match event_result {
+                    Ok(event) => {
+                        match event {
+                            AgentEvent::AiResponseChunk(chunk) => {
+                                print!("{}", chunk.bright_green());
+                                io::stdout().flush().unwrap();
+                                full_ai_response.push_str(&chunk);
+                                pending_display.push_str(&chunk);
                             }
-                        })).unwrap_or_else(|_| "Failed to serialize tool result to YAML.".to_string());
-
-                        // プロンプトに合わせて`---`で囲む
-                        self.agent.add_ai_response(format!("---\n{}\n---", feedback_message));
-
-                        println!("{}", "  AIがツール結果を考慮中...".normal());
-                        
-                        match self.agent.chat_with_tools_realtime("ツール実行結果に基づいて次のアクションをしてください。".to_string()).await {
-                             Ok(mut stream) => {
-                                while let Some(chunk_result) = stream.next().await {
-                                    match chunk_result {
-                                        Ok(chunk) => {
-                                            print!("{}", chunk.bold());
-                                            io::stdout().flush().map_err(|e| format!("出力のフラッシュに失敗しました: {}", e))?;
-                                        },
-                                        Err(e) => {
-                                            eprintln!("\n{} {:?}", "ストリームからの読み込みエラー:".red().bold(), e);
-                                            break;
-                                        }
-                                    }
+                            AgentEvent::AddMessageToHistory(_message) => {
+                                // このイベントは、AIが自身のメッセージを履歴に追加したいことを意味します。
+                                // このイベントが生成される前に、エージェントによって内部的に既に追加されているはずです。
+                                // ここで何かをする必要はないかもしれませんし、UIの更新に利用するかもしれません。
+                            }
+                            AgentEvent::ToolCallDetected(tool_call) => {
+                                println!(
+                                    "\n{}",
+                                    "--- ツール呼び出しを検出しました ---".yellow().bold()
+                                );
+                                println!(
+                                    "{}: {}",
+                                    "ツール名".yellow(),
+                                    tool_call.tool_name.yellow()
+                                );
+                                println!(
+                                    "{}: {}",
+                                    "パラメータ".yellow(),
+                                    serde_yaml::to_string(&tool_call.parameters)
+                                        .unwrap_or_else(
+                                            |_| "パラメータのシリアライズエラー".to_string()
+                                        )
+                                        .yellow()
+                                ); // ★修正：YAML形式で表示
+                                println!("{}", "---------------------------------".yellow().bold());
+                                io::stdout().flush().unwrap();
+                                if !pending_display.is_empty() {
+                                    full_ai_response.push_str(&pending_display);
+                                    pending_display.clear();
                                 }
-                                println!();
-                            },
-                            Err(e) => {
-                                eprintln!("\n{} {:?}", "AIとの通信エラー:".red().bold(), e);
+                                tool_output_received_this_turn = true;
+                            }
+                            AgentEvent::ToolExecuting(tool_name) => {
+                                println!(
+                                    "{}: {}...",
+                                    "ツールを実行中".cyan().bold(),
+                                    tool_name.cyan()
+                                );
+                                io::stdout().flush().unwrap();
+                                if !pending_display.is_empty() {
+                                    full_ai_response.push_str(&pending_display);
+                                    pending_display.clear();
+                                }
+                            }
+                            AgentEvent::ToolResult(tool_name, result) => {
+                                println!(
+                                    "\n{}: {}",
+                                    "--- ツール結果".green().bold(),
+                                    tool_name.green().bold()
+                                );
+                                println!(
+                                    "{}",
+                                    serde_yaml::to_string(&result)
+                                        .unwrap_or_else(
+                                            |_| "ツール結果のシリアライズエラー".to_string()
+                                        )
+                                        .green()
+                                ); // ★修正：YAML形式で表示
+                                println!("{}", "-----------------------------".green().bold());
+                                io::stdout().flush().unwrap();
+                                tool_output_received_this_turn = true;
+                            }
+                            AgentEvent::ToolError(tool_name, error_message) => {
+                                eprintln!(
+                                    "\n{}: {}",
+                                    "--- ツールエラー".red().bold(),
+                                    tool_name.red().bold()
+                                );
+                                eprintln!("{}: {}", "エラー".red(), error_message.red());
+                                eprintln!("{}", "--------------------------".red().bold());
+                                io::stdout().flush().unwrap();
+                                tool_output_received_this_turn = true;
+                            }
+                            AgentEvent::Thinking(message) => {
+                                println!(
+                                    "\n{}: {}",
+                                    "AI思考中".magenta().bold(),
+                                    message.magenta()
+                                );
+                                io::stdout().flush().unwrap();
+                            }
+                            AgentEvent::UserMessageAdded => {
+                                // これはエージェントの内部的なもので、主に履歴管理用です。
+                                // ユーザーメッセージの表示はadd_user_messageで既に処理しています。
+                            }
+                            AgentEvent::AttemptingToolDetection => {
+                                println!("\n{}", "ツール検出を試みています...".yellow());
+                                io::stdout().flush().unwrap();
+                                if !pending_display.is_empty() {
+                                    full_ai_response.push_str(&pending_display);
+                                    pending_display.clear();
+                                }
+                            }
+                            AgentEvent::PendingDisplayContent(content) => {
+                                print!("{}", content.bright_green());
+                                io::stdout().flush().unwrap();
+                                full_ai_response.push_str(&content);
+                            }
+                            AgentEvent::ToolBlockParseWarning(yaml_content) => {
+                                eprintln!(
+                                    "\n{}:\n{}",
+                                    "警告: ツールブロックYAMLをパースできませんでした"
+                                        .red()
+                                        .bold(),
+                                    yaml_content.red()
+                                );
+                                io::stdout().flush().unwrap();
+                                full_ai_response.push_str(&format!("\n---\n{}\n---", yaml_content));
+                            }
+                            AgentEvent::YamlParseError(error_msg, yaml_content) => {
+                                eprintln!(
+                                    "\n{}: {}\n{}:\n{}",
+                                    "YAMLツール呼び出しのパースエラー".red().bold(),
+                                    error_msg.red(),
+                                    "コンテンツ".red(),
+                                    yaml_content.red()
+                                );
+                                io::stdout().flush().unwrap();
+                                full_ai_response.push_str(&format!(
+                                    "\nツール呼び出しのパースエラー: {}\nコンテンツ:\n{}",
+                                    error_msg, yaml_content
+                                ));
                             }
                         }
-                    },
+                    }
                     Err(e) => {
-                        eprintln!("{} {:?}", "シェルコマンド実行エラー:".red().bold(), e);
+                        eprintln!(
+                            "\n{}: {:?}",
+                            "ストリームエラー".red().bold(),
+                            e.to_string().red()
+                        );
+                        let error_message = ChatMessage {
+                            role: ChatRole::System,
+                            content: format!("AIストリーム中にエラーが発生しました: {:?}", e),
+                        };
+                        let mut agent_locked = self.agent.lock().await;
+                        agent_locked.add_message_to_history(error_message.clone());
+                        self.session_messages.push(error_message);
+                        return Err(e.into());
                     }
                 }
-                continue;
             }
 
-            print!("{}", "AI: ".green().bold());
-            io::stdout().flush().map_err(|e| format!("出力のフラッシュに失敗しました: {}", e))?;
-
-            println!("{}", "  AIが思考中...".normal());
-
-            match self.agent.chat_with_tools_realtime(user_input.to_string()).await {
-                Ok(mut stream) => {
-                    while let Some(chunk_result) = stream.next().await {
-                        match chunk_result {
-                            Ok(chunk) => {
-                                print!("{}", chunk.bold());
-                                io::stdout().flush().map_err(|e| format!("出力のフラッシュに失敗しました: {}", e))?;
-                            },
-                            Err(e) => {
-                                eprintln!("\n{} {:?}", "ストリームからの読み込みエラー:".red().bold(), e);
-                                break;
-                            }
-                        }
-                    }
-                    println!();
-                },
-                Err(e) => {
-                    eprintln!("\n{} {:?}", "AIとの通信エラー:".red().bold(), e);
-                    self.agent.revert_last_user_message();
+            if !tool_output_received_this_turn {
+                if !full_ai_response.is_empty() {
+                    self.session_messages.push(ChatMessage {
+                        role: ChatRole::Assistant,
+                        content: full_ai_response.clone(),
+                    });
                 }
+                break;
+            } else {
+                let agent_locked = self.agent.lock().await;
+                current_turn_messages = agent_locked.messages.clone();
+                full_ai_response.clear();
             }
         }
         Ok(())
+    }
+
+    pub fn get_messages(&self) -> &Vec<ChatMessage> {
+        &self.session_messages
+    }
+
+    pub async fn revert_last_turn(&mut self) {
+        let mut agent_locked = self.agent.lock().await;
+        let initial_history_len = agent_locked.messages.len();
+
+        agent_locked.revert_last_user_message();
+
+        if self
+            .session_messages
+            .last()
+            .map_or(false, |m| m.role == ChatRole::User)
+        {
+            self.session_messages.pop();
+        }
+
+        while let Some(msg) = agent_locked.messages.last() {
+            if msg.role != ChatRole::User && agent_locked.messages.len() >= initial_history_len {
+                agent_locked.messages.pop();
+            } else {
+                break;
+            }
+        }
+        self.session_messages = agent_locked.messages.clone();
+        println!("\n{}", "最後のターンを元に戻しました。".yellow());
+        io::stdout().flush().unwrap();
+    }
+
+    pub async fn set_model(&mut self, model_name: String) -> Result<()> {
+        let mut agent_locked = self.agent.lock().await;
+        agent_locked.set_model(model_name.clone());
+        self.current_model = model_name;
+        println!(
+            "{}: {}",
+            "モデルを設定しました".cyan().bold(),
+            self.current_model.cyan()
+        );
+        Ok(())
+    }
+
+    pub async fn list_models(&self) -> Result<serde_json::Value> {
+        let agent_locked = self.agent.lock().await;
+        agent_locked
+            .list_available_models()
+            .await
+            .map_err(anyhow::Error::from)
     }
 }

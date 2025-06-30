@@ -3,22 +3,54 @@ pub mod api;
 pub mod tools;
 
 use anyhow::Result;
-use api::{AIApi, ChatMessage, ChatRole, OllamaApiError};
-use colored::*;
-use futures_util::stream::{Stream, StreamExt, once};
+use api::{AIApi, OllamaApiError};
+use crate::modules::agent::api::{ChatMessage, ChatRole};
+use futures_util::stream::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::boxed::Box;
-use std::io::{self, Write};
 use std::pin::Pin;
+// Removed: use std::io; // Unused import from previous error
+
+use tokio::sync::Mutex;
+use std::sync::Arc;
 
 use tools::ToolManager;
 
 // AIがツール呼び出しを記述するYAMLの構造体
-#[derive(Debug, Deserialize, Serialize)]
-struct AiToolCall {
-    tool_name: String,
-    parameters: Value,
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AiToolCall {
+    pub tool_name: String,
+    pub parameters: Value,
+}
+
+/// エージェントからチャットセッションに送られるイベントの種類
+#[derive(Debug)]
+pub enum AgentEvent {
+    /// AIの応答のチャンク（通常のテキスト）
+    AiResponseChunk(String),
+    /// AIが自身のメッセージを履歴に追加したいことを示す
+    AddMessageToHistory(ChatMessage),
+    /// ツール呼び出しが検出された
+    ToolCallDetected(AiToolCall),
+    /// ツールが実行されている
+    ToolExecuting(String),
+    /// ツールの実行が成功した
+    ToolResult(String, Value), // tool_name, result
+    /// ツールの実行が失敗した
+    ToolError(String, String), // tool_name, error_message
+    /// AIが思考中であることを示すメッセージ
+    Thinking(String),
+    /// ユーザーメッセージが追加されたことを示す (UIでは特に表示しない)
+    UserMessageAdded,
+    /// ツールブロックの検出を試みているメッセージ
+    AttemptingToolDetection,
+    /// 通常のAIのテキストとして表示する保留中のコンテンツ
+    PendingDisplayContent(String),
+    /// ツールブロックをパースできなかった場合の警告
+    ToolBlockParseWarning(String),
+    /// YAMLツール呼び出しのパースに失敗したエラー
+    YamlParseError(String, String), // error message, yaml content
 }
 
 // AIの応答からツール呼び出しを抽出・パースするヘルパー関数
@@ -29,17 +61,15 @@ fn extract_tool_call_from_response(response_content: &str) -> Option<AiToolCall>
     let mut found_start = false;
     let mut block_content = String::new();
 
-    // 行ごとに処理し、`tool_call:` キーを持つYAMLブロックを探す
     for line in response_content.lines() {
         let trimmed_line = line.trim();
 
         if trimmed_line == block_marker {
             if found_start {
-                // 既に開始マーカーが見つかっている状態で終了マーカーを見つけた
                 break;
             } else {
                 found_start = true;
-                continue; // 開始マーカー自体はブロック内容に含めない
+                continue;
             }
         }
 
@@ -55,16 +85,9 @@ fn extract_tool_call_from_response(response_content: &str) -> Option<AiToolCall>
             tool_call: AiToolCall,
         }
 
-        // YAMLパースはブロックの内容全体で行う
         match serde_yaml::from_str::<OuterToolCall>(&block_content) {
             Ok(outer_call) => Some(outer_call.tool_call),
-            Err(e) => {
-                eprintln!(
-                    "{} YAMLツール呼び出しのパースに失敗しました: {}",
-                    "エラー:".red().bold(),
-                    e
-                );
-                eprintln!("{} YAML内容:\n{}", "内容:".yellow(), block_content);
+            Err(_e) => {
                 None
             }
         }
@@ -74,8 +97,8 @@ fn extract_tool_call_from_response(response_content: &str) -> Option<AiToolCall>
 }
 
 pub struct AIAgent {
-    api: AIApi,
-    messages: Vec<ChatMessage>,
+    api: AIApi, // Keep this private
+    pub messages: Vec<ChatMessage>,
     pub tool_manager: ToolManager,
     default_prompt_template: String,
 }
@@ -98,36 +121,54 @@ impl AIAgent {
         }
     }
 
+    // New public method to set the model via the agent's internal API
+    pub fn set_model(&mut self, model_name: String) {
+        self.api.set_model(model_name); // Now this calls AIApi's set_model
+    }
+
     pub async fn list_available_models(&self) -> Result<serde_json::Value, OllamaApiError> {
         self.api.list_models().await
     }
 
     pub async fn chat_with_tools_realtime(
-        &mut self,
-        user_content: String,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, OllamaApiError>> + Send>>, OllamaApiError>
+        self_arc_mutex: Arc<Mutex<Self>>,
+        initial_messages: Vec<ChatMessage>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<AgentEvent, OllamaApiError>> + Send>>, OllamaApiError>
     {
-        // ユーザーメッセージを追加
-        self.messages.push(ChatMessage {
-            role: ChatRole::User,
-            content: user_content,
-        });
+        let agent_stream = async_stream::stream! {
+            let mut current_messages_for_api = initial_messages;
 
-        // ツール利用のループ
-        loop {
-            let mut full_messages_for_api = self.messages.clone();
+            loop {
+                // Acquire lock for immutable access (api, tool_manager, default_prompt_template)
+                let (api_clone, tool_manager_schemas, default_prompt_template_clone) = {
+                    let agent_locked_immutable = self_arc_mutex.lock().await; 
+                    
+                    // Clone necessary data out of the lock
+                    let api_clone = agent_locked_immutable.api.clone();
+                    let tool_manager_schemas = agent_locked_immutable.tool_manager.get_tool_json_schemas();
+                    let default_prompt_template_clone = agent_locked_immutable.default_prompt_template.clone();
+                    (api_clone, tool_manager_schemas, default_prompt_template_clone)
+                }; // `agent_locked_immutable` is dropped here, releasing the lock
 
-            // システムプロンプトを先頭に追加（ツール定義を埋め込む）
-            let tool_schemas = self.tool_manager.get_tool_json_schemas();
-            let formatted_prompt = self
-                .default_prompt_template
-                .replace("{{TOOLS_JSON_SCHEMA}}", &tool_schemas.to_string());
+                // System prompt (tool definitions) logic remains
+                let formatted_prompt = default_prompt_template_clone
+                    .replace("{{TOOLS_JSON_SCHEMA}}", &tool_manager_schemas.to_string());
 
-            if let Some(msg) = full_messages_for_api.get_mut(0) {
-                if msg.role == ChatRole::System {
-                    msg.content = formatted_prompt;
+                // Ensure system message is at the beginning
+                if let Some(msg) = current_messages_for_api.get_mut(0) {
+                    if msg.role == ChatRole::System {
+                        msg.content = formatted_prompt;
+                    } else {
+                        current_messages_for_api.insert(
+                            0,
+                            ChatMessage {
+                                role: ChatRole::System,
+                                content: formatted_prompt,
+                            },
+                        );
+                    }
                 } else {
-                    full_messages_for_api.insert(
+                    current_messages_for_api.insert(
                         0,
                         ChatMessage {
                             role: ChatRole::System,
@@ -135,244 +176,161 @@ impl AIAgent {
                         },
                     );
                 }
-            } else {
-                full_messages_for_api.insert(
-                    0,
-                    ChatMessage {
-                        role: ChatRole::System,
-                        content: formatted_prompt,
-                    },
-                );
-            }
+                
+                let mut ai_response_stream = api_clone
+                    .get_chat_completion_stream(current_messages_for_api.clone())
+                    .await?;
 
-            let mut ai_response_stream = self
-                .api
-                .get_chat_completion_stream(full_messages_for_api)
-                .await?;
+                let mut full_ai_response_content = String::new();
+                let mut tool_block_detected = false;
+                let mut tool_yaml_buffer = String::new();
+                let mut pending_display_content = String::new();
 
-            let mut full_ai_response_content = String::new();
-            let mut tool_block_detected = false;
-            let mut tool_yaml_buffer = String::new();
-            let mut pending_display_content = String::new(); // AIがツール呼び出しで中断する前のテキスト部分
+                while let Some(chunk_result) = ai_response_stream.next().await {
+                    match chunk_result {
+                        Ok(chunk) => {
+                            full_ai_response_content.push_str(&chunk);
 
-            // ストリームから応答をリアルタイムで収集し、表示し、ツール呼び出しを検出
-            while let Some(chunk_result) = ai_response_stream.next().await {
-                match chunk_result {
-                    Ok(chunk) => {
-                        full_ai_response_content.push_str(&chunk);
+                            if !tool_block_detected {
+                                pending_display_content.push_str(&chunk);
+                                if pending_display_content.contains("---")
+                                    && pending_display_content.contains("tool_call:")
+                                {
+                                    tool_block_detected = true;
 
-                        // ツールブロック検出ロジックをより堅牢に
-                        if !tool_block_detected {
-                            pending_display_content.push_str(&chunk);
-                            // ツールブロックの開始を検知
-                            if pending_display_content.contains("---")
-                                && pending_display_content.contains("tool_call:")
-                            {
-                                tool_block_detected = true;
-
-                                // ツールブロック開始までのテキストを表示
-                                let parts: Vec<&str> =
-                                    pending_display_content.splitn(2, "---").collect();
-                                if parts.len() > 1 {
-                                    print!("{}", parts[0].bold());
-                                    io::stdout().flush().expect("stdout flush failed");
-                                    tool_yaml_buffer.push_str("---"); // 最初のマーカーをバッファに追加
-                                    tool_yaml_buffer.push_str(parts[1]); // 残りの部分をバッファに追加
+                                    let parts: Vec<&str> =
+                                        pending_display_content.splitn(2, "---").collect();
+                                    if parts.len() > 1 {
+                                        yield Ok(AgentEvent::PendingDisplayContent(parts[0].to_string()));
+                                        tool_yaml_buffer.push_str("---");
+                                        tool_yaml_buffer.push_str(parts[1]);
+                                    } else {
+                                        yield Ok(AgentEvent::PendingDisplayContent(pending_display_content.clone()));
+                                        tool_yaml_buffer.push_str(&pending_display_content);
+                                    }
+                                    yield Ok(AgentEvent::AttemptingToolDetection);
+                                    pending_display_content.clear();
                                 } else {
-                                    // "---" が見つからない場合は、チャンク全体を表示し、バッファリング開始
-                                    print!("{}", pending_display_content.bold());
-                                    io::stdout().flush().expect("stdout flush failed");
-                                    tool_yaml_buffer.push_str(&pending_display_content);
+                                    yield Ok(AgentEvent::AiResponseChunk(chunk.to_string()));
                                 }
-                                println!(
-                                    "\n{}",
-                                    "  --- ツール呼び出しを検出しようとしています... ---"
-                                        .truecolor(128, 128, 128)
-                                );
-                                io::stdout().flush().expect("stdout flush failed");
-                                pending_display_content.clear(); // クリアしてツールYAMLバッファリングに専念
                             } else {
-                                // まだツールブロックではない場合、通常のAIのテキストとしてリアルタイム表示
-                                print!("{}", chunk.bold());
-                                io::stdout().flush().expect("stdout flush failed");
-                                // pending_display_content は次のチャンクでツール呼び出しの可能性をチェックするために保持
-                            }
-                        } else {
-                            // ツールブロックの途中
-                            tool_yaml_buffer.push_str(&chunk);
-                            // ツールブロックの終了マーカーを検知
-                            if chunk.contains("---") && tool_yaml_buffer.contains("tool_call:") {
-                                // 最後の "---" が見つかったので、ストリームの読み込みを停止
-                                break;
+                                tool_yaml_buffer.push_str(&chunk);
+                                if chunk.contains("---") && tool_yaml_buffer.contains("tool_call:") {
+                                    break;
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        return Ok(once(async { Err(e) }).boxed());
+                        Err(e) => {
+                            yield Err(e);
+                            return;
+                        }
                     }
                 }
-            }
 
-            // AIの応答を履歴に追加 (ツール呼び出しの有無に関わらず、AIが出力した内容は履歴に残す)
-            self.messages.push(ChatMessage {
-                role: ChatRole::Assistant,
-                content: full_ai_response_content.clone(),
-            });
+                // Acquire lock to add message to history
+                {
+                    let mut agent_locked_mut = self_arc_mutex.lock().await;
+                    agent_locked_mut.add_message_to_history(ChatMessage {
+                        role: ChatRole::Assistant,
+                        content: full_ai_response_content.clone(),
+                    });
+                } // `agent_locked_mut` is dropped here, releasing the lock
 
-            // ツール呼び出しが検出された場合のみ、追加の処理を行う
-            if tool_block_detected {
-                // ツール呼び出しを解析
-                if let Some(call_tool) = extract_tool_call_from_response(&tool_yaml_buffer) {
-                    // ここを修正します
-                    let formatted_tool_call = if call_tool.tool_name == "shell" {
-                        if let Some(command_line) = call_tool.parameters["command_line"].as_str() {
-                            format!("{} ({})", call_tool.tool_name, command_line)
-                        } else {
-                            format!("{} (無効な引数)", call_tool.tool_name)
-                        }
-                    } else {
-                        // 他のツールについては、デフォルトでツール名と整形されたJSON引数を表示
-                        format!(
-                            "{} (引数: {})",
-                            call_tool.tool_name,
-                            serde_json::to_string_pretty(&call_tool.parameters).unwrap_or_default()
-                        )
-                    };
-                    println!(
-                        "\n{}",
-                        format!("--- ツール呼び出しを検出: {} ---", formatted_tool_call)
-                            .truecolor(128, 128, 128)
-                    );
-                    // 修正ここまで
+                if tool_block_detected {
+                    let tool_call_result = extract_tool_call_from_response(&tool_yaml_buffer);
+                    if let Some(call_tool) = tool_call_result {
+                        yield Ok(AgentEvent::ToolCallDetected(call_tool.clone()));
+                        yield Ok(AgentEvent::ToolExecuting(call_tool.tool_name.clone()));
 
-                    io::stdout().flush().expect("stdout flush failed");
+                        let self_arc_mutex_clone_for_tool_exec = self_arc_mutex.clone();
+                        let tool_name_for_future = call_tool.tool_name.clone();
+                        let parameters_for_future = call_tool.parameters.clone();
 
-                    println!("{}", "  ツールを実行中...".truecolor(128, 128, 128));
-                    io::stdout().flush().expect("stdout flush failed");
+                        let actual_tool_result_outcome = async move {
+                            let agent_locked_for_tool_exec = self_arc_mutex_clone_for_tool_exec.lock().await;
+                            
+                            agent_locked_for_tool_exec.tool_manager.execute_tool(
+                                &tool_name_for_future, 
+                                parameters_for_future
+                            ).await
+                        }.await; 
+                        
+                        match actual_tool_result_outcome { 
+                            Ok(tool_result) => {
+                                yield Ok(AgentEvent::ToolResult(call_tool.tool_name.clone(), tool_result.clone()));
 
-                    // ツールを実行
-                    match self
-                        .tool_manager
-                        .execute_tool(&call_tool.tool_name, call_tool.parameters.clone())
-                        .await
-                    {
-                        Ok(tool_result) => {
-                            println!("{}", "--- ツール実行結果 ---".truecolor(128, 128, 128));
+                                let tool_output_message_content =
+                                    serde_yaml::to_string(&serde_json::json!({
+                                        "tool_result": {
+                                            "tool_name": call_tool.tool_name,
+                                            "result": tool_result
+                                        }
+                                    }))
+                                    .unwrap_or_else(|_| {
+                                        "Failed to serialize tool result to YAML.".to_string()
+                                    });
 
-                            if call_tool.tool_name == "shell" {
-                                let stdout = tool_result["stdout"].as_str().unwrap_or("");
-                                let stderr = tool_result["stderr"].as_str().unwrap_or("");
-                                let success = tool_result["success"].as_bool().unwrap_or(false);
+                                // Acquire lock to add message to history
+                                {
+                                    let mut agent_locked_mut = self_arc_mutex.lock().await;
+                                    agent_locked_mut.add_message_to_history(ChatMessage {
+                                        role: ChatRole::System,
+                                        content: format!("---\n{}\n---", tool_output_message_content),
+                                    });
+                                } // Lock dropped
 
-                                if !stdout.is_empty() {
-                                    println!(
-                                        "{} {}",
-                                        "stdout:".green().bold(),
-                                        stdout.truecolor(128, 128, 128)
-                                    );
-                                }
-                                if !stderr.is_empty() {
-                                    println!(
-                                        "{} {}",
-                                        "stderr:".red().bold(),
-                                        stderr.truecolor(128, 128, 128)
-                                    );
-                                }
-                                if !stdout.is_empty() || !stderr.is_empty() {
-                                    println!(
-                                        "{}",
-                                        "---------------------".truecolor(128, 128, 128)
-                                    );
-                                }
-                                if !success {
-                                    println!(
-                                        "{}",
-                                        "コマンドがエラーコードを返しました。".red().bold()
-                                    );
-                                }
-                            } else {
-                                // 他のツールの場合、デフォルトのJSON pretty print
-                                println!(
-                                    "{}",
-                                    serde_json::to_string_pretty(&tool_result)
-                                        .unwrap_or_default()
-                                        .truecolor(128, 128, 128)
-                                );
+                                yield Ok(AgentEvent::Thinking("AIがツール結果を考慮中...".to_string()));
+
+                                // Break here, let ChatSession re-evaluate and call again with updated history
+                                break;
                             }
+                            Err(e) => {
+                                yield Ok(AgentEvent::ToolError(call_tool.tool_name.clone(), format!("{:?}", e)));
 
-                            println!("{}", "---------------------".truecolor(128, 128, 128)); // 共通の終了マーカー
-                            io::stdout().flush().expect("stdout flush failed");
-
-                            // ツール実行結果をAIへのメッセージ履歴に追加（YAML形式）
-                            let tool_output_message_content =
-                                serde_yaml::to_string(&serde_json::json!({
-                                    "tool_result": {
+                                let error_message_content = serde_yaml::to_string(&serde_json::json!({
+                                    "tool_error": {
                                         "tool_name": call_tool.tool_name,
-                                        "result": tool_result
+                                        "error": format!("{:?}", e)
                                     }
                                 }))
                                 .unwrap_or_else(|_| {
-                                    "Failed to serialize tool result to YAML.".to_string()
+                                    "Failed to serialize tool error to YAML.".to_string()
                                 });
 
-                            self.messages.push(ChatMessage {
-                                role: ChatRole::System, // ツール結果はシステムメッセージとしてAIにフィードバック
-                                content: format!("---\n{}\n---", tool_output_message_content),
-                            });
+                                // Acquire lock to add message to history
+                                {
+                                    let mut agent_locked_mut = self_arc_mutex.lock().await;
+                                    agent_locked_mut.add_message_to_history(ChatMessage {
+                                        role: ChatRole::System,
+                                        content: format!("---\n{}\n---", error_message_content),
+                                    });
+                                } // Lock dropped
 
-                            println!("{}", "  AIがツール結果を考慮中...".normal());
-                            io::stdout().flush().expect("stdout flush failed");
+                                yield Ok(AgentEvent::Thinking("AIがツールエラーを考慮中...".to_string()));
 
-                            // ループを続行し、AIに次の応答をさせる
-                            continue;
+                                break;
+                            }
                         }
-                        Err(e) => {
-                            eprintln!("{} {:?}", "ツール実行エラー:".red().bold(), e);
-                            io::stdout().flush().expect("stdout flush failed");
-
-                            // エラーをAIにフィードバック
-                            let error_message_content = serde_yaml::to_string(&serde_json::json!({
-                                "tool_error": {
-                                    "tool_name": call_tool.tool_name,
-                                    "error": format!("{:?}", e)
-                                }
-                            }))
-                            .unwrap_or_else(|_| {
-                                "Failed to serialize tool error to YAML.".to_string()
-                            });
-
-                            self.messages.push(ChatMessage {
-                                role: ChatRole::System,
-                                content: format!("---\n{}\n---", error_message_content),
-                            });
-
-                            println!("{}", "  AIがツールエラーを考慮中...".normal());
-                            io::stdout().flush().expect("stdout flush failed");
-
-                            // エラー発生時もループを続行し、AIに次の応答をさせる
-                            continue;
-                        }
+                    } else {
+                        yield Ok(AgentEvent::YamlParseError(
+                            "YAMLツール呼び出しのパースに失敗しました".to_string(),
+                            tool_yaml_buffer.clone()
+                        ));
+                        yield Ok(AgentEvent::ToolBlockParseWarning(tool_yaml_buffer.clone()));
+                        yield Ok(AgentEvent::AiResponseChunk(full_ai_response_content));
+                        break;
                     }
                 } else {
-                    // ツールブロックらしきものはあったがパースできなかった場合
-                    eprintln!("{} {}", "警告: ツールブロックが検出されましたが、パースできませんでした。AIの出力形式を確認してください。".yellow().bold(), tool_yaml_buffer);
-                    io::stdout().flush().expect("stdout flush failed");
-
-                    // パースできなかったツールブロックの内容は通常のAI応答として返す
-                    return Ok(once(async move { Ok(full_ai_response_content) }).boxed());
+                    break;
                 }
-            } else {
-                // ツール呼び出しでなかった場合、最終的なAIの応答としてストリームを返す
-                return Ok(once(async move { Ok(full_ai_response_content) }).boxed());
             }
-        }
+        };
+
+        Ok(Box::pin(agent_stream))
     }
 
-    pub fn add_ai_response(&mut self, ai_content: String) {
-        self.messages.push(ChatMessage {
-            role: ChatRole::Assistant,
-            content: ai_content,
-        });
+    pub fn add_message_to_history(&mut self, message: ChatMessage) {
+        self.messages.push(message);
     }
 
     pub fn revert_last_user_message(&mut self) {
