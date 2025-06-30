@@ -1,4 +1,3 @@
-// src/modules/chat.rs
 use crate::modules::agent::api::{ChatMessage, ChatRole};
 use crate::modules::agent::{AIAgent, AgentEvent};
 use anyhow::Result;
@@ -7,6 +6,83 @@ use futures_util::stream::StreamExt;
 use std::io::{self, Write};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+/// Represents the main application.
+pub struct App {
+    chat_session: ChatSession,
+}
+
+impl App {
+    /// Creates a new App instance.
+    pub fn new(ollama_base_url: String, default_ollama_model: String) -> Self {
+        let chat_session = ChatSession::new(ollama_base_url, default_ollama_model);
+        App { chat_session }
+    }
+
+    /// Runs the main application loop.
+    pub async fn run(&mut self) -> std::io::Result<()> {
+        println!("{}: {}", "Default Ollama Model".cyan().bold(), self.chat_session.current_model.cyan());
+
+        println!("\n{}", "AI Integration Chat Session".purple().bold());
+        println!("{}", "'/exit' と入力して終了します。".blue());
+        println!("{}", "'/model <モデル名>' と入力してモデルを変更します。".blue());
+        println!("{}", "'/list models' と入力して利用可能なモデルを表示します。".blue());
+        println!("{}", "'/revert' と入力して最後のターンを元に戻します。".blue());
+
+
+        loop {
+            print!("\n{}: ", "あなた".blue().bold());
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim();
+
+            if input.eq_ignore_ascii_case("/exit") {
+                break;
+            } else if input.starts_with("/model ") {
+                let model_name = input.trim_start_matches("/model ").trim().to_string();
+                if let Err(e) = self.chat_session.set_model(model_name).await {
+                    eprintln!("{}: {}", "モデルの設定中にエラーが発生しました".red().bold(), e.to_string().red());
+                }
+                continue;
+            } else if input.eq_ignore_ascii_case("/list models") {
+                match self.chat_session.list_models().await {
+                    Ok(models) => {
+                        println!("\n{}", "利用可能なモデル:".yellow().bold());
+                        if let Some(model_list) = models["models"].as_array() {
+                            for model in model_list {
+                                if let Some(name) = model["name"].as_str() {
+                                    println!("- {}", name.yellow());
+                                }
+                            }
+                        } else {
+                            println!("{}", "モデルが見つからないか、予期しない応答形式です。".red());
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{}: {:?}", "モデルのリスト中にエラーが発生しました".red().bold(), e.to_string().red());
+                    }
+                }
+                continue;
+            } else if input.eq_ignore_ascii_case("/revert") {
+                self.chat_session.revert_last_turn().await;
+                continue;
+            }
+
+            println!("{}: {}", "あなた".blue().bold(), input);
+
+            self.chat_session.add_user_message(input.to_string()).await;
+
+            if let Err(e) = self.chat_session.start_realtime_chat().await {
+                eprintln!("{}: {}", "チャットセッション中にエラーが発生しました".red().bold(), e.to_string().red());
+            }
+        }
+
+        println!("\n{}", "チャットセッションを終了しました。".purple().bold());
+        Ok(())
+    }
+}
 
 /// AIエージェントとの単一のチャットセッションを表します。
 pub struct ChatSession {
@@ -35,9 +111,6 @@ impl ChatSession {
         };
         agent_locked.add_message_to_history(user_message.clone());
         self.session_messages.push(user_message);
-        // ★修正：main.rs側でユーザー入力を表示するように変更したため、ここでは表示しない
-        // println!("\n{}: {}", "あなた".blue().bold(), self.session_messages.last().unwrap().content);
-        // io::stdout().flush().unwrap();
     }
 
     /// ツール実行を伴うリアルタイムチャットセッションを開始および管理します。
@@ -67,9 +140,9 @@ impl ChatSession {
                                 pending_display.push_str(&chunk);
                             }
                             AgentEvent::AddMessageToHistory(_message) => {
-                                // このイベントは、AIが自身のメッセージを履歴に追加したいことを意味します。
-                                // このイベントが生成される前に、エージェントによって内部的に既に追加されているはずです。
-                                // ここで何かをする必要はないかもしれませんし、UIの更新に利用するかもしれません。
+                                // This event means the AI wants to add its own message to history.
+                                // It should have already been added internally by the agent before this event is produced.
+                                // May not need to do anything here, or could be used for UI updates.
                             }
                             AgentEvent::ToolCallDetected(tool_call) => {
                                 println!(
@@ -148,8 +221,8 @@ impl ChatSession {
                                 io::stdout().flush().unwrap();
                             }
                             AgentEvent::UserMessageAdded => {
-                                // これはエージェントの内部的なもので、主に履歴管理用です。
-                                // ユーザーメッセージの表示はadd_user_messageで既に処理しています。
+                                // This is internal to the agent, mainly for history management.
+                                // User message display is already handled in add_user_message.
                             }
                             AgentEvent::AttemptingToolDetection => {
                                 println!("\n{}", "ツール検出を試みています...".yellow());
@@ -226,9 +299,9 @@ impl ChatSession {
         Ok(())
     }
 
-    pub fn get_messages(&self) -> &Vec<ChatMessage> {
-        &self.session_messages
-    }
+    // pub fn get_messages(&self) -> &Vec<ChatMessage> {
+    //     &self.session_messages
+    // }
 
     pub async fn revert_last_turn(&mut self) {
         let mut agent_locked = self.agent.lock().await;

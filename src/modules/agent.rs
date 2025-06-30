@@ -24,11 +24,12 @@ pub struct AiToolCall {
 }
 
 /// エージェントからチャットセッションに送られるイベントの種類
-#[derive(Debug)]
+// #[derive(Debug)]
 pub enum AgentEvent {
     /// AIの応答のチャンク（通常のテキスト）
     AiResponseChunk(String),
     /// AIが自身のメッセージを履歴に追加したいことを示す
+    #[allow(dead_code)]
     AddMessageToHistory(ChatMessage),
     /// ツール呼び出しが検出された
     ToolCallDetected(AiToolCall),
@@ -41,10 +42,12 @@ pub enum AgentEvent {
     /// AIが思考中であることを示すメッセージ
     Thinking(String),
     /// ユーザーメッセージが追加されたことを示す (UIでは特に表示しない)
+    #[allow(dead_code)]
     UserMessageAdded,
     /// ツールブロックの検出を試みているメッセージ
     AttemptingToolDetection,
     /// 通常のAIのテキストとして表示する保留中のコンテンツ
+    #[allow(dead_code)]
     PendingDisplayContent(String),
     /// ツールブロックをパースできなかった場合の警告
     ToolBlockParseWarning(String),

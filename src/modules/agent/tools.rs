@@ -16,6 +16,7 @@ pub enum ToolError {
     NotFound(String),
     ExecutionError(String),
     SerializationError(String),
+    #[allow(dead_code)]
     DeserializationError(String),
     Io(IoError),
     OllamaApi(OllamaApiError),

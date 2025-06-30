@@ -32,7 +32,8 @@ pub struct ChatMessage {
     pub content: String,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Default)]
+#[allow(dead_code)]
 pub struct ChatCompletionResponse {
     pub model: String,
     pub created_at: String,
@@ -48,6 +49,7 @@ pub enum OllamaApiError {
     ApiError(String),
     StreamError(String),
     IoError(std::io::Error),
+    #[allow(dead_code)]
     NoMessageFound,
 }
 
