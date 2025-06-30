@@ -2,6 +2,7 @@
 pub mod shell;
 pub mod files;
 pub mod www;
+pub mod utils;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::io::Error as IoError;

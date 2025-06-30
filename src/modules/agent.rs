@@ -80,16 +80,22 @@ fn extract_tool_call_from_response(response_content: &str) -> Option<AiToolCall>
             let mut current_line_idx = i + 1; // マーカーの次の行から開始
 
             // マーカーの直後に言語指定や `tool_call:` が続く場合の処理
-            let content_after_marker = trimmed_line.strip_prefix("---").or_else(|| trimmed_line.strip_prefix("```"));
+            let content_after_marker = trimmed_line
+                .strip_prefix("---")
+                .or_else(|| trimmed_line.strip_prefix("```"));
             if let Some(remainder) = content_after_marker {
                 let stripped_remainder = remainder.trim();
                 // 残りの部分が空でなく、かつ言語指定やtool_call:と判断できる場合、この行の残りをコンテンツに含める
-                if !stripped_remainder.is_empty() && (stripped_remainder.starts_with("tool_call:") || stripped_remainder == "yaml" || stripped_remainder == "json") {
-                     block_content.push_str(stripped_remainder);
-                     block_content.push('\n');
+                if !stripped_remainder.is_empty()
+                    && (stripped_remainder.starts_with("tool_call:")
+                        || stripped_remainder == "yaml"
+                        || stripped_remainder == "json")
+                {
+                    block_content.push_str(stripped_remainder);
+                    block_content.push('\n');
                 }
             }
-            
+
             // ブロックの本体を抽出
             while current_line_idx < lines.len() {
                 let inner_trimmed_line = lines[current_line_idx].trim();
@@ -125,7 +131,6 @@ fn extract_tool_call_from_response(response_content: &str) -> Option<AiToolCall>
     None
 }
 
-
 pub struct AIAgent {
     api: AIApi, // Keep this private
     pub messages: Vec<ChatMessage>,
@@ -144,6 +149,7 @@ impl AIAgent {
         tool_manager.register_tool(tools::files::info::InfoTool);
         tool_manager.register_tool(tools::files::read::ReadTool);
         tool_manager.register_tool(tools::files::write::WriteTool);
+        tool_manager.register_tool(tools::utils::weather::WeatherTool);
         let default_prompt_template = include_str!("default-prompt.md").to_string();
 
         AIAgent {
@@ -187,9 +193,9 @@ impl AIAgent {
                 // --- 2. Inject system prompt ---
                 let formatted_prompt = default_prompt_template_clone
                     .replace("{{TOOLS_JSON_SCHEMA}}", &tool_manager_schemas.to_string());
-                
+
                 loop_messages.retain(|msg| msg.role != ChatRole::System);
-                
+
                 // Insert system prompt before the last user message for better context
                 let insert_index = if let Some(pos) = loop_messages.iter().rposition(|m| m.role == ChatRole::User) {
                     pos
@@ -270,7 +276,7 @@ impl AIAgent {
                             let error_message_content = serde_yaml::to_string(&serde_json::json!({
                                 "tool_error": { "tool_name": call_tool.tool_name, "error": error_message }
                             })).unwrap_or_else(|_| "Failed to serialize tool error.".to_string());
-                            
+
                             let mut agent_locked = self_arc_mutex.lock().await;
                             agent_locked.add_message_to_history(ChatMessage {
                                 role: ChatRole::System,
@@ -278,7 +284,7 @@ impl AIAgent {
                             });
                         }
                     }
-                    
+
                     // Update the message history for the next iteration of the loop
                     {
                         let agent_locked = self_arc_mutex.lock().await;
