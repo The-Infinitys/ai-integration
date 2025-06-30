@@ -1,5 +1,5 @@
 // src/main.rs
-use ai_integration::modules::chat::ChatSession;
+use ai_integration::modules::cli::ChatSession;
 use colored::*;
 use std::io::{self, Write};
 
