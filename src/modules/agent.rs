@@ -263,7 +263,7 @@ impl AIAgent {
 
                 let system_message = ChatMessage {
                     role: ChatRole::System,
-                    content: formatted: formatted_prompt,
+                    content: formatted_prompt,
                 };
 
                 // ユーザーメッセージの直前、またはリストの先頭に挿入
