@@ -35,26 +35,6 @@ tool_call:
 ## ツール実行結果のフィードバック
 私がツールを実行した後、その結果は以下のYAML形式のコードブロックであなたに返されます。この結果を基に、ユーザーへの最終的な回答を生成したり、さらに別のツールを呼び出したりしてください。
 
----
-tool_result:
-  tool_name: <実行されたツール名>
-  result: |
-    <ツールの出力内容（stdout/stderrなど）>
----
-
-**例：** `ls -l` コマンドの実行結果
-
----
-tool_result:
-  tool_name: shell
-  result: |
-    stdout:
-      total 8
-      -rw-r--r-- 1 user user 123 Jan 1 10:00 file1.txt
-      -rw-r--r-- 1 user user 456 Jan 1 10:05 file2.txt
-    stderr: ""
----
-
 ## ツール使用時の注意点
 
 ツールを使用した直後に、自分で結果を言うのは辞めろ。

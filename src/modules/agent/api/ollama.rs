@@ -1,12 +1,13 @@
 // src/modules/agent/api/ollama.rs
 use bytes::Bytes;
+use colored::*;
 use futures_util::StreamExt;
 use futures_util::stream::{Stream, TryStreamExt};
 use reqwest::{Client, Error as ReqwestError};
 use serde::{Deserialize, Serialize};
 use serde_json::Error as SerdeJsonError;
-
 use std::boxed::Box;
+use std::fmt;
 use std::pin::Pin;
 
 #[derive(Serialize, Default)]
@@ -30,6 +31,21 @@ pub enum ChatRole {
 pub struct ChatMessage {
     pub role: ChatRole,
     pub content: String,
+}
+impl fmt::Display for ChatMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", "Role".green().bold(), self.role)?;
+        write!(f, "{}: |\n  {}", "Content".cyan().bold(), self.content)
+    }
+}
+impl fmt::Display for ChatRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::User => write!(f, "{}", "You".yellow()),
+            Self::Assistant => write!(f, "{}", "AI".green()),
+            Self::System => write!(f, "{}", "System".cyan()),
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
