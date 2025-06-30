@@ -241,14 +241,14 @@ impl AIAgent {
     /// この関数は、AIの応答をストリームし、ツール呼び出しを検出して実行し、その結果をAIにフィードバックして次の思考を促します。
     pub async fn chat_with_tools_realtime(
         self_arc_mutex: Arc<Mutex<Self>>,
-        mut initial_messages: Vec<ChatMessage>, // 初期メッセージ (変更可能)
+        initial_messages: Vec<ChatMessage>, // 初期メッセージ (変更可能)
     ) -> Result<
         Pin<Box<dyn Stream<Item = Result<AgentEvent, OllamaApiError>> + Send>>,
         OllamaApiError,
     > {
         let agent_stream = async_stream::stream! {
             // ループ内で使用するメッセージリストのクローン
-            let mut loop_messages = initial_messages.clone();
+            let mut _loop_messages = initial_messages.clone();
 
             // システムプロンプトが会話の開始時に一度だけ挿入されたことを示すフラグ
             let mut system_prompt_added = false;
@@ -263,7 +263,7 @@ impl AIAgent {
                     agent_locked.write_message_to_log(msg); // ログにはここで書き込む
                 }
                 // agent_locked.messages が更新されたので、loop_messages もそれに合わせる
-                loop_messages = agent_locked.messages.clone();
+                _loop_messages = agent_locked.messages.clone();
             }
 
             loop {
@@ -288,17 +288,17 @@ impl AIAgent {
                     };
 
                     // ツールスキーマを含むSystemメッセージが既に履歴に存在するかを確認
-                    let has_system_prompt_already = loop_messages.iter()
+                    let has_system_prompt_already = _loop_messages.iter()
                         .any(|msg| msg.role == ChatRole::System && msg.content.contains("TOOLS_JSON_SCHEMA"));
 
                     if !has_system_prompt_already {
                         // ユーザーメッセージの直前、またはリストの最後に挿入
-                        let insert_index = if let Some(pos) = loop_messages.iter().rposition(|m| m.role == ChatRole::User) {
+                        let insert_index = if let Some(pos) = _loop_messages.iter().rposition(|m| m.role == ChatRole::User) {
                             pos
                         } else {
-                            loop_messages.len()
+                            _loop_messages.len()
                         };
-                        loop_messages.insert(insert_index, system_message.clone());
+                        _loop_messages.insert(insert_index, system_message.clone());
 
                         // agent の履歴にも追加し、ログにも書き込む (add_message_to_history経由)
                         {
@@ -311,7 +311,7 @@ impl AIAgent {
 
                 // --- 3. AI応答ストリームを取得 ---
                 let mut ai_response_stream = api_clone
-                    .get_chat_completion_stream(loop_messages.clone())
+                    .get_chat_completion_stream(_loop_messages.clone())
                     .await?;
 
                 // --- 4. AIからのストリームを処理し、ツール呼び出しが検出されたら中断 ---
@@ -403,7 +403,7 @@ impl AIAgent {
                     // ループの次のイテレーションのためにメッセージ履歴を更新
                     {
                         let agent_locked = self_arc_mutex.lock().await;
-                        loop_messages = agent_locked.messages.clone();
+                        _loop_messages = agent_locked.messages.clone();
                     }
 
                     yield Ok(AgentEvent::Thinking("AI is considering the tool's result...".to_string()));

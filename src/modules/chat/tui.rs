@@ -167,9 +167,8 @@ impl TuiApp {
             .split(size);
 
         let messages_block = Block::default()
-            .borders(Borders::ALL)
-            .title("Chat History")
-            .border_type(ratatui::widgets::BorderType::Rounded)
+            .borders(Borders::NONE)
+            .title("")
             .padding(Padding::horizontal(1));
 
         let mut list_items: Vec<ListItem> = Vec::new();
@@ -528,7 +527,10 @@ Error: {}
 
         if tool_was_used {
             // If a tool was used, the AI should continue thinking.
-            self.set_status_message("AI is considering the tool's result...".to_string(), Color::Yellow);
+            self.set_status_message(
+                "AI is considering the tool's result...".to_string(),
+                Color::Yellow,
+            );
             self.is_ai_replying = true; // Keep the AI in a replying state
             self.start_chat_stream(); // Start a new chat stream immediately
         } else {
