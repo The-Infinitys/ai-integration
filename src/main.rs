@@ -5,7 +5,7 @@ use crossterm::execute;
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode}; // ターミナルを復元するためにインポート
 use std::io; // 標準入出力操作のためのトレイトと関数をインポート
 use std::panic; // パニックフックを設定するためにインポート
-use reqwest; // HTTPクライアントのためにインポート
+ // HTTPクライアントのためにインポート
 use serde_json::Value; // JSONパースのためにインポート
 
 mod modules; // modulesディレクトリをモジュールとして宣言

@@ -32,7 +32,7 @@ impl Tool for WeatherTool {
     async fn execute(&self, args: Value) -> Result<Value, ToolError> {
         let target_url = format!(
             "https://wttr.in/{}",
-            args["location"].as_str().or(Some("")).unwrap()
+            args["location"].as_str().unwrap_or("")
         );
         let result = reqwest::get(target_url)
             .await

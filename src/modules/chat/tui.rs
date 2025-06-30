@@ -340,7 +340,7 @@ impl TuiApp {
         if input_width > input_area_width + self.input_scroll {
             self.input_scroll = input_width - input_area_width;
         } else if self.input_scroll > 0 && input_width <= self.input_scroll {
-            self.input_scroll = input_width.saturating_sub(1).max(0);
+            self.input_scroll = input_width.saturating_sub(1);
         }
 
         Ok(())
@@ -372,7 +372,7 @@ impl TuiApp {
 
     async fn handle_command(&mut self, command: &str) {
         let parts: Vec<&str> = command.split_whitespace().collect();
-        let command_name = parts.get(0).unwrap_or(&"");
+        let command_name = parts.first().unwrap_or(&"");
 
         match *command_name {
             "/exit" => self.should_quit = true,
