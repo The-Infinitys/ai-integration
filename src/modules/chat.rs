@@ -239,7 +239,7 @@ impl ChatSession {
         if self
             .session_messages
             .last()
-            .map_or(false, |m| m.role == ChatRole::User)
+            .is_some_and(|m| m.role == ChatRole::User)
         {
             self.session_messages.pop();
         }

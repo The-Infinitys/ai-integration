@@ -166,7 +166,6 @@ impl AIAgent {
         let agent_stream = async_stream::stream! {
             let mut current_messages_for_api = initial_messages;
 
-            loop {
                 // Acquire lock for immutable access (api, tool_manager, default_prompt_template)
                 let (api_clone, tool_manager_schemas, default_prompt_template_clone) = {
                     let agent_locked_immutable = self_arc_mutex.lock().await;
@@ -316,7 +315,6 @@ impl AIAgent {
                                 yield Ok(AgentEvent::Thinking("AIがツール結果を考慮中...".to_string()));
 
                                 // Break here, let ChatSession re-evaluate and call again with updated history
-                                break;
                             }
                             Err(e) => {
                                 yield Ok(AgentEvent::ToolError(call_tool.tool_name.clone(), format!("{:?}", e)));
@@ -342,7 +340,6 @@ impl AIAgent {
 
                                 yield Ok(AgentEvent::Thinking("AIがツールエラーを考慮中...".to_string()));
 
-                                break;
                             }
                         }
                     } else {
@@ -355,13 +352,8 @@ impl AIAgent {
                         // ここで `full_ai_response_content` を表示し直す必要はありません。
                         // `full_ai_response_content` は既に履歴に保存されています。
                         // yield Ok(AgentEvent::AiResponseChunk(full_ai_response_content));
-                        break;
                     }
-                } else {
-                    // ツールブロックが検出されなかった場合は、AIの応答が完了したと判断
-                    break;
                 }
-            }
         };
 
         Ok(Box::pin(agent_stream))
