@@ -215,14 +215,22 @@ impl AIAgent {
                     .get_chat_completion_stream(loop_messages.clone())
                     .await?;
 
-                // --- 4. Process the entire stream from AI ---
+                // --- 4. Process the stream from AI, breaking if a tool call is found ---
                 let mut full_ai_response_content = String::new();
-                while let Some(chunk_result) = ai_response_stream.next().await {
+                let mut call_tool_option: Option<AiToolCall> = None;
+
+                'stream_loop: while let Some(chunk_result) = ai_response_stream.next().await {
                     match chunk_result {
                         Ok(chunk) => {
                             full_ai_response_content.push_str(&chunk);
-                            // Yield each chunk immediately for the "typing" effect in the UI
-                            yield Ok(AgentEvent::AiResponseChunk(chunk));
+                            yield Ok(AgentEvent::AiResponseChunk(chunk.clone()));
+
+                            // Try to parse a tool call from the accumulated content.
+                            if let Some(call_tool) = extract_tool_call_from_response(&full_ai_response_content) {
+                                call_tool_option = Some(call_tool);
+                                // Tool call found, stop listening to the AI's stream.
+                                break 'stream_loop;
+                            }
                         }
                         Err(e) => {
                             yield Err(e);
@@ -232,7 +240,7 @@ impl AIAgent {
                 }
 
                 // --- 5. Add AI's full response to history ---
-                // This is done only once after the entire response is received.
+                // This is done only once after the AI part of the turn is complete.
                 {
                     let mut agent_locked = self_arc_mutex.lock().await;
                     agent_locked.add_message_to_history(ChatMessage {
@@ -241,8 +249,8 @@ impl AIAgent {
                     });
                 }
 
-                // --- 6. Parse the full response for a tool call and decide the next step ---
-                if let Some(call_tool) = extract_tool_call_from_response(&full_ai_response_content) {
+                // --- 6. If a tool call was found, execute it ---
+                if let Some(call_tool) = call_tool_option {
                     // A tool was found in the response.
                     yield Ok(AgentEvent::ToolCallDetected(call_tool.clone()));
                     yield Ok(AgentEvent::ToolExecuting(call_tool.tool_name.clone()));

@@ -1,9 +1,8 @@
 // src/modules/agent/tools/utils.rs
 use super::super::{Tool, ToolError};
 use async_trait::async_trait;
-use reqwest;
 use serde_json::{Value, json};
-
+use www_search::browse::fetch_and_markdown;
 pub struct WeatherTool;
 
 #[async_trait]
@@ -34,13 +33,9 @@ impl Tool for WeatherTool {
             "https://wttr.in/{}",
             args["location"].as_str().unwrap_or("")
         );
-        let result = reqwest::get(target_url)
+        let result = fetch_and_markdown(&target_url)
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Failed to fetch Failed: {}", e)))?;
-        let result = result
-            .text()
-            .await
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to get text: {}", e)))?;
         Ok(json!({
             "result": result,
         }))
