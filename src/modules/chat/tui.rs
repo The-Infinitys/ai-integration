@@ -523,9 +523,19 @@ Error: {}
 
     async fn handle_stream_complete(&mut self) {
         self.flush_ai_buffer_to_messages().await;
+        let tool_was_used = !self.tool_output_buffer.is_empty();
         self.flush_tool_buffer_to_messages();
-        self.set_status_message("AI response complete.".to_string(), Color::Green);
-        self.is_ai_replying = false;
+
+        if tool_was_used {
+            // If a tool was used, the AI should continue thinking.
+            self.set_status_message("AI is considering the tool's result...".to_string(), Color::Yellow);
+            self.is_ai_replying = true; // Keep the AI in a replying state
+            self.start_chat_stream(); // Start a new chat stream immediately
+        } else {
+            // If no tool was used, the turn is complete.
+            self.set_status_message("AI response complete.".to_string(), Color::Green);
+            self.is_ai_replying = false;
+        }
     }
 
     async fn flush_ai_buffer_to_messages(&mut self) {

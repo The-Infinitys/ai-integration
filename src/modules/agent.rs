@@ -171,38 +171,32 @@ impl AIAgent {
         OllamaApiError,
     > {
         let agent_stream = async_stream::stream! {
-            let mut current_messages_for_api = initial_messages;
+            let mut loop_messages = initial_messages;
 
-                // Acquire lock for immutable access (api, tool_manager, default_prompt_template)
+            loop {
+                // --- 1. Get latest state and prepare for API call ---
                 let (api_clone, tool_manager_schemas, default_prompt_template_clone) = {
-                    let agent_locked_immutable = self_arc_mutex.lock().await;
-
-                    // Clone necessary data out of the lock
-                    let api_clone = agent_locked_immutable.api.clone();
-                    let tool_manager_schemas = agent_locked_immutable.tool_manager.get_tool_json_schemas();
-                    let default_prompt_template_clone = agent_locked_immutable.default_prompt_template.clone();
-                    (api_clone, tool_manager_schemas, default_prompt_template_clone)
-                }; // `agent_locked_immutable` is dropped here, releasing the lock
-
-                // System prompt (tool definitions) logic remains
-                let formatted_prompt = default_prompt_template_clone
-                    .replace("{{TOOLS_JSON_SCHEMA}}", &tool_manager_schemas.to_string());
-
-                // ユーザーからの指示があるたびに、AIにツールの使い方を思い出させるためのシステムプロンプトを注入します。
-                // 既存のシステムメッセージを削除し、ユーザーの最新のメッセージの直前に新しいメッセージを挿入します。
-
-                // 既存のシステムメッセージをすべて削除して、重複を避ける
-                current_messages_for_api.retain(|msg| msg.role != ChatRole::System);
-
-                // ユーザーの最新のメッセージ（通常はリストの最後）の直前に、更新されたシステムプロンプトを挿入する
-                // これにより、AIが現在のタスクを処理する際に、ツールの説明が文脈的に最も近くなる
-                let insert_index = if current_messages_for_api.is_empty() {
-                    0
-                } else {
-                    current_messages_for_api.len() - 1
+                    let agent_locked = self_arc_mutex.lock().await;
+                    (
+                        agent_locked.api.clone(),
+                        agent_locked.tool_manager.get_tool_json_schemas(),
+                        agent_locked.default_prompt_template.clone(),
+                    )
                 };
 
-                current_messages_for_api.insert(
+                // --- 2. Inject system prompt ---
+                let formatted_prompt = default_prompt_template_clone
+                    .replace("{{TOOLS_JSON_SCHEMA}}", &tool_manager_schemas.to_string());
+                
+                loop_messages.retain(|msg| msg.role != ChatRole::System);
+                
+                // Insert system prompt before the last user message for better context
+                let insert_index = if let Some(pos) = loop_messages.iter().rposition(|m| m.role == ChatRole::User) {
+                    pos
+                } else {
+                    loop_messages.len()
+                };
+                loop_messages.insert(
                     insert_index,
                     ChatMessage {
                         role: ChatRole::System,
@@ -210,156 +204,95 @@ impl AIAgent {
                     },
                 );
 
+                // --- 3. Get AI response stream ---
                 let mut ai_response_stream = api_clone
-                    .get_chat_completion_stream(current_messages_for_api.clone())
+                    .get_chat_completion_stream(loop_messages.clone())
                     .await?;
 
+                // --- 4. Process the entire stream from AI ---
                 let mut full_ai_response_content = String::new();
-                let mut tool_block_detected = false;
-                let mut tool_yaml_buffer = String::new();
-                let mut pending_display_content = String::new();
-
                 while let Some(chunk_result) = ai_response_stream.next().await {
                     match chunk_result {
                         Ok(chunk) => {
                             full_ai_response_content.push_str(&chunk);
-
-                            // ★変更点: ここで `extract_tool_call_from_response` を使用してツールブロックを検出
-                            // `tool_block_detected` が一度trueになったら、ツールブロックの終わりを探すモードに移行
-                            if !tool_block_detected {
-                                pending_display_content.push_str(&chunk);
-                                // partial_response_content は現在のチャンクを含むこれまでの全内容
-                                if let Some(_tool_call) = extract_tool_call_from_response(&full_ai_response_content) {
-                                    // ツールブロックが検出されたが、まだストリームの途中の可能性があるので、
-                                    // そのツールブロック部分だけをバッファに格納し、残りをpending_display_contentからクリア
-                                    tool_block_detected = true;
-                                    tool_yaml_buffer = full_ai_response_content.clone(); // フル応答からツールブロック全体をキャプチャ
-
-                                    // ツールブロックの手前までのコンテンツを抽出して表示
-                                    let tool_block_start_index = full_ai_response_content.find("---tool_call:").or_else(|| full_ai_response_content.find("```tool_call:")).unwrap_or_else(|| full_ai_response_content.find("```").unwrap_or(0));
-                                    if tool_block_start_index > 0 {
-                                        yield Ok(AgentEvent::AiResponseChunk(
-                                            full_ai_response_content[..tool_block_start_index].to_string()
-                                        ));
-                                    }
-                                    yield Ok(AgentEvent::AttemptingToolDetection);
-                                    pending_display_content.clear(); // ここでクリア
-                                    break; // ツールブロックが検出されたら、このAI応答ストリームを中断し、次のループでツール実行へ
-                                } else {
-                                    // ツールブロックがまだ検出されていない場合は、通常のAI応答チャンクとして表示
-                                    yield Ok(AgentEvent::AiResponseChunk(chunk.to_string()));
-                                }
-                            } else {
-                                // ツールブロックがすでに検出されている場合、バッファに追記し続ける
-                                tool_yaml_buffer.push_str(&chunk);
-                                // ここでは、ツールブロックの終了を検出するのではなく、`extract_tool_call_from_response` が
-                                // 完全な `tool_yaml_buffer` を処理できるように待機します。
-                                // `extract_tool_call_from_response` が None を返した場合でも、
-                                // ストリームが終了するか、次のチャンクで完了することを期待します。
-                            }
+                            // Yield each chunk immediately for the "typing" effect in the UI
+                            yield Ok(AgentEvent::AiResponseChunk(chunk));
                         }
                         Err(e) => {
                             yield Err(e);
-                            return;
+                            return; // End the whole stream on a critical error
                         }
                     }
                 }
 
-                // Acquire lock to add message to history
+                // --- 5. Add AI's full response to history ---
+                // This is done only once after the entire response is received.
                 {
-                    let mut agent_locked_mut = self_arc_mutex.lock().await;
-                    agent_locked_mut.add_message_to_history(ChatMessage {
+                    let mut agent_locked = self_arc_mutex.lock().await;
+                    agent_locked.add_message_to_history(ChatMessage {
                         role: ChatRole::Assistant,
                         content: full_ai_response_content.clone(),
                     });
-                } // `agent_locked_mut` is dropped here, releasing the lock
-
-                if tool_block_detected {
-                    // ストリームが終了したか、ツールブロックが検出されたので、バッファからツール呼び出しを抽出
-                    let tool_call_result = extract_tool_call_from_response(&tool_yaml_buffer);
-                    if let Some(call_tool) = tool_call_result {
-                        yield Ok(AgentEvent::ToolCallDetected(call_tool.clone()));
-                        yield Ok(AgentEvent::ToolExecuting(call_tool.tool_name.clone()));
-
-                        let self_arc_mutex_clone_for_tool_exec = self_arc_mutex.clone();
-                        let tool_name_for_future = call_tool.tool_name.clone();
-                        let parameters_for_future = call_tool.parameters.clone();
-
-                        let actual_tool_result_outcome = async move {
-                            let agent_locked_for_tool_exec = self_arc_mutex_clone_for_tool_exec.lock().await;
-
-                            agent_locked_for_tool_exec.tool_manager.execute_tool(
-                                &tool_name_for_future,
-                                parameters_for_future
-                            ).await
-                        }.await;
-
-                        match actual_tool_result_outcome {
-                            Ok(tool_result) => {
-                                yield Ok(AgentEvent::ToolResult(call_tool.tool_name.clone(), tool_result.clone()));
-
-                                let tool_output_message_content =
-                                    serde_yaml::to_string(&serde_json::json!({
-                                        "tool_result": {
-                                            "tool_name": call_tool.tool_name,
-                                            "result": tool_result
-                                        }
-                                    }))
-                                    .unwrap_or_else(|_| {
-                                        "Failed to serialize tool result to YAML.".to_string()
-                                    });
-
-                                // Acquire lock to add message to history
-                                {
-                                    let mut agent_locked_mut = self_arc_mutex.lock().await;
-                                    agent_locked_mut.add_message_to_history(ChatMessage {
-                                        role: ChatRole::System, // ツール結果はSystemロール
-                                        content: format!("---\n{}\n---", tool_output_message_content),
-                                    });
-                                } // Lock dropped
-
-                                yield Ok(AgentEvent::Thinking("AIがツール結果を考慮中...".to_string()));
-
-                                // Break here, let ChatSession re-evaluate and call again with updated history
-                            }
-                            Err(e) => {
-                                yield Ok(AgentEvent::ToolError(call_tool.tool_name.clone(), format!("{:?}", e)));
-
-                                let error_message_content = serde_yaml::to_string(&serde_json::json!({
-                                    "tool_error": {
-                                        "tool_name": call_tool.tool_name,
-                                        "error": format!("{:?}", e)
-                                    }
-                                }))
-                                .unwrap_or_else(|_| {
-                                    "Failed to serialize tool error to YAML.".to_string()
-                                });
-
-                                // Acquire lock to add message to history
-                                {
-                                    let mut agent_locked_mut = self_arc_mutex.lock().await;
-                                    agent_locked_mut.add_message_to_history(ChatMessage {
-                                        role: ChatRole::System, // エラーはSystemとしてAIにフィードバック
-                                        content: format!("---\n{}\n---", error_message_content),
-                                    });
-                                } // Lock dropped
-
-                                yield Ok(AgentEvent::Thinking("AIがツールエラーを考慮中...".to_string()));
-
-                            }
-                        }
-                    } else {
-                        // extract_tool_call_from_response が None を返した場合（パースできなかった場合）
-                        yield Ok(AgentEvent::YamlParseError(
-                            "YAMLツール呼び出しのパースに失敗しました".to_string(),
-                            tool_yaml_buffer.clone()
-                        ));
-                        yield Ok(AgentEvent::ToolBlockParseWarning(tool_yaml_buffer.clone()));
-                        // ここで `full_ai_response_content` を表示し直す必要はありません。
-                        // `full_ai_response_content` は既に履歴に保存されています。
-                        // yield Ok(AgentEvent::AiResponseChunk(full_ai_response_content));
-                    }
                 }
+
+                // --- 6. Parse the full response for a tool call and decide the next step ---
+                if let Some(call_tool) = extract_tool_call_from_response(&full_ai_response_content) {
+                    // A tool was found in the response.
+                    yield Ok(AgentEvent::ToolCallDetected(call_tool.clone()));
+                    yield Ok(AgentEvent::ToolExecuting(call_tool.tool_name.clone()));
+
+                    // Execute the tool
+                    let tool_result_outcome = {
+                        let agent_locked = self_arc_mutex.lock().await;
+                        agent_locked.tool_manager.execute_tool(
+                            &call_tool.tool_name,
+                            call_tool.parameters.clone()
+                        ).await
+                    };
+
+                    // Process the tool's result and add it to history
+                    match tool_result_outcome {
+                        Ok(tool_result) => {
+                            yield Ok(AgentEvent::ToolResult(call_tool.tool_name.clone(), tool_result.clone()));
+                            let tool_output_message_content = serde_yaml::to_string(&serde_json::json!({
+                                "tool_result": { "tool_name": call_tool.tool_name, "result": tool_result }
+                            })).unwrap_or_else(|_| "Failed to serialize tool result.".to_string());
+
+                            let mut agent_locked = self_arc_mutex.lock().await;
+                            agent_locked.add_message_to_history(ChatMessage {
+                                role: ChatRole::System,
+                                content: format!("---\n{}\n---", tool_output_message_content),
+                            });
+                        }
+                        Err(e) => {
+                            let error_message = format!("{:?}", e);
+                            yield Ok(AgentEvent::ToolError(call_tool.tool_name.clone(), error_message.clone()));
+                            let error_message_content = serde_yaml::to_string(&serde_json::json!({
+                                "tool_error": { "tool_name": call_tool.tool_name, "error": error_message }
+                            })).unwrap_or_else(|_| "Failed to serialize tool error.".to_string());
+                            
+                            let mut agent_locked = self_arc_mutex.lock().await;
+                            agent_locked.add_message_to_history(ChatMessage {
+                                role: ChatRole::System,
+                                content: format!("---\n{}\n---", error_message_content),
+                            });
+                        }
+                    }
+                    
+                    // Update the message history for the next iteration of the loop
+                    {
+                        let agent_locked = self_arc_mutex.lock().await;
+                        loop_messages = agent_locked.messages.clone();
+                    }
+
+                    yield Ok(AgentEvent::Thinking("AI is considering the tool's result...".to_string()));
+                    // Continue the loop to let the AI process the tool result and think again.
+                } else {
+                    // No tool call was detected in the AI's response.
+                    // The conversation turn is complete. Break the loop.
+                    break;
+                }
+            }
         };
 
         Ok(Box::pin(agent_stream))
