@@ -247,41 +247,71 @@ impl AIAgent {
         OllamaApiError,
     > {
         let agent_stream = async_stream::stream! {
-            """            let mut agent_locked = self_arc_mutex.lock().await;
-            let mut loop_messages = agent_locked.messages.clone();
+            // ループ内で使用するメッセージリストのクローン
+            let mut _loop_messages = initial_messages.clone();
 
-            // --- システムプロンプトを注入 (最初の一度のみ) ---
-            let has_system_prompt_already = loop_messages.iter().any(|msg| {
-                msg.role == ChatRole::System && msg.content.contains("You are a helpful assistant")
-            });
+            // システムプロンプトが会話の開始時に一度だけ挿入されたことを示すフラグ
+            let mut system_prompt_added = false;
 
-            if !has_system_prompt_already {
-                let tool_manager_schemas = agent_locked.tool_manager.get_tool_json_schemas();
-                let formatted_prompt = agent_locked
-                    .default_prompt_template
-                    .replace("{{TOOLS_JSON_SCHEMA}}", &tool_manager_schemas.to_string());
-
-                let system_message = ChatMessage {
-                    role: ChatRole::System,
-                    content: formatted_prompt,
-                };
-
-                // ユーザーメッセージの直前、またはリストの先頭に挿入
-                let insert_index = loop_messages
-                    .iter()
-                    .rposition(|m| m.role == ChatRole::User)
-                    .unwrap_or(0);
-                loop_messages.insert(insert_index, system_message.clone());
-                agent_locked.messages.insert(insert_index, system_message);
+            // 初期メッセージをログに記録
+            // add_message_to_history は内部で write_message_to_log を呼び出すため、
+            // ここでは直接 loop_messages を操作せず、agent_locked.messages を更新し、ログに書き込む
+            {
+                let mut agent_locked = self_arc_mutex.lock().await;
+                for msg in &initial_messages {
+                    agent_locked.messages.push(msg.clone()); // agent の内部履歴に直接追加
+                    agent_locked.write_message_to_log(msg); // ログにはここで書き込む
+                }
+                // agent_locked.messages が更新されたので、loop_messages もそれに合わせる
+                _loop_messages = agent_locked.messages.clone();
             }
 
-            let api_clone = agent_locked.api.clone();
-            drop(agent_locked); // Mutexを早めに解放
-
             loop {
+                // --- 1. 最新の状態を取得し、API呼び出しの準備をする ---
+                let (api_clone, tool_manager_schemas, default_prompt_template_clone) = {
+                    let agent_locked = self_arc_mutex.lock().await;
+                    (
+                        agent_locked.api.clone(), // AIApiのクローン
+                        agent_locked.tool_manager.get_tool_json_schemas(), // ツールのJSONスキーマ
+                        agent_locked.default_prompt_template.clone(), // デフォルトプロンプトテンプレート
+                    )
+                };
+
+                // --- 2. システムプロンプトを注入 (最初の一度のみ) ---
+                if !system_prompt_added {
+                    let formatted_prompt = default_prompt_template_clone
+                        .replace("{{TOOLS_JSON_SCHEMA}}", &tool_manager_schemas.to_string());
+
+                    let system_message = ChatMessage {
+                        role: ChatRole::System,
+                        content: formatted_prompt,
+                    };
+
+                    // ツールスキーマを含むSystemメッセージが既に履歴に存在するかを確認
+                    let has_system_prompt_already = _loop_messages.iter()
+                        .any(|msg| msg.role == ChatRole::System && msg.content.contains("TOOLS_JSON_SCHEMA"));
+
+                    if !has_system_prompt_already {
+                        // ユーザーメッセージの直前、またはリストの最後に挿入
+                        let insert_index = if let Some(pos) = _loop_messages.iter().rposition(|m| m.role == ChatRole::User) {
+                            pos
+                        } else {
+                            _loop_messages.len()
+                        };
+                        _loop_messages.insert(insert_index, system_message.clone());
+
+                        // agent の履歴にも追加し、ログにも書き込む (add_message_to_history経由)
+                        {
+                            let mut agent_locked = self_arc_mutex.lock().await;
+                            agent_locked.add_message_to_history(system_message.clone());
+                        }
+                    }
+                    system_prompt_added = true; // システムプロンプトが追加されたことをマーク
+                }
+
                 // --- 3. AI応答ストリームを取得 ---
                 let mut ai_response_stream = api_clone
-                    .get_chat_completion_stream(loop_messages.clone())
+                    .get_chat_completion_stream(_loop_messages.clone())
                     .await?;
 
                 // --- 4. AIからのストリームを処理し、ツール呼び出しが検出されたら中断 ---
@@ -292,41 +322,43 @@ impl AIAgent {
                     match chunk_result {
                         Ok(chunk) => {
                             full_ai_response_content.push_str(&chunk);
-                            yield Ok(AgentEvent::AiResponseChunk(chunk.clone()));
+                            yield Ok(AgentEvent::AiResponseChunk(chunk.clone())); // UIにチャンクを送信
 
+                            // 蓄積されたコンテンツからツール呼び出しのパースを試みる
                             if let Some(call_tool) = extract_tool_call_from_response(&full_ai_response_content) {
                                 call_tool_option = Some(call_tool);
+                                // ツール呼び出しが検出されたら、AIのストリームの受信を停止
                                 break 'stream_loop;
                             }
                         }
                         Err(e) => {
-                            yield Err(e);
-                            return;
+                            yield Err(e); // エラーをUIに送信
+                            return; // 致命的なエラーが発生したらストリーム全体を終了
                         }
                     }
                 }
 
                 // --- 5. AIの完全な応答を履歴に追加 ---
-                let assistant_message = ChatMessage {
-                    role: ChatRole::Assistant,
-                    content: full_ai_response_content.clone(),
-                };
+                // AIのターンが完了した後に一度だけ行われる
                 {
                     let mut agent_locked = self_arc_mutex.lock().await;
-                    // ツール呼び出しがない場合のみ、ここでアシスタントメッセージを追加
-                    // ツール呼び出しがある場合は、TUI側で追加される
-                    if call_tool_option.is_none() {
-                        agent_locked.add_message_to_history(assistant_message.clone());
-                    }
+                    let assistant_message = ChatMessage {
+                        role: ChatRole::Assistant,
+                        content: full_ai_response_content.clone(),
+                    };
+                    // Assistantメッセージをエージェントの履歴に追加し、ログにも書き込む
+                    // TUI側でも flush_ai_buffer_to_messages で追加されるが、
+                    // ツールが呼ばれなかった場合にここで確定させるために必要。
+                    agent_locked.add_message_to_history(assistant_message.clone());
                 }
-                loop_messages.push(assistant_message);
-
 
                 // --- 6. ツール呼び出しが検出された場合、それを実行 ---
                 if let Some(call_tool) = call_tool_option {
+                    // ツール呼び出しイベントをUIに送信
                     yield Ok(AgentEvent::ToolCallDetected(call_tool.clone()));
-                    yield Ok(AgentEvent::ToolExecuting(call_tool.tool_name.clone()));
+                    yield Ok(AgentEvent::ToolExecuting(call_tool.tool_name.clone())); // ツール実行中イベント
 
+                    // ツールを実行
                     let tool_result_outcome = {
                         let agent_locked = self_arc_mutex.lock().await;
                         agent_locked.tool_manager.execute_tool(
@@ -335,52 +367,53 @@ impl AIAgent {
                         ).await
                     };
 
-                    let (tool_message, event) = match tool_result_outcome {
+                    // ツールの結果を処理し、履歴に追加
+                    match tool_result_outcome {
                         Ok(tool_result) => {
-                            let content = serde_yaml::to_string(&serde_json::json!({
-                                "tool_result": { "tool_name": &call_tool.tool_name, "result": &tool_result }
-                            })).unwrap_or_default();
-                            (
-                                ChatMessage {
-                                    role: ChatRole::System,
-                                    content: format!("---
-{}
----", content),
-                                },
-                                AgentEvent::ToolResult(call_tool.tool_name.clone(), tool_result)
-                            )
+                            yield Ok(AgentEvent::ToolResult(call_tool.tool_name.clone(), tool_result.clone())); // ツール結果をUIに送信
+                            let tool_output_message_content = serde_yaml::to_string(&serde_json::json!({
+                                "tool_result": { "tool_name": call_tool.tool_name, "result": tool_result }
+                            })).unwrap_or_else(|_| "Failed to serialize tool result.".to_string());
+
+                            let mut agent_locked = self_arc_mutex.lock().await;
+                            let tool_output_message = ChatMessage {
+                                role: ChatRole::System, // ツールの結果はシステムロールとして扱う
+                                content: format!("---\n{}\n---", tool_output_message_content),
+                            };
+                            // ツール結果をエージェントの履歴に追加し、ログにも書き込む
+                            agent_locked.add_message_to_history(tool_output_message.clone());
                         }
                         Err(e) => {
                             let error_message = format!("{:?}", e);
-                            let content = serde_yaml::to_string(&serde_json::json!({
-                                "tool_error": { "tool_name": &call_tool.tool_name, "error": &error_message }
-                            })).unwrap_or_default();
-                            (
-                                ChatMessage {
-                                    role: ChatRole::System,
-                                    content: format!("---
-{}
----", content),
-                                },
-                                AgentEvent::ToolError(call_tool.tool_name.clone(), error_message)
-                            )
+                            yield Ok(AgentEvent::ToolError(call_tool.tool_name.clone(), error_message.clone())); // ツールエラーをUIに送信
+                            let error_message_content = serde_yaml::to_string(&serde_json::json!({
+                                "tool_error": { "tool_name": call_tool.tool_name, "error": error_message }
+                            })).unwrap_or_else(|_| "Failed to serialize tool error.".to_string());
+
+                            let mut agent_locked = self_arc_mutex.lock().await;
+                            let tool_error_message = ChatMessage {
+                                role: ChatRole::System, // ツールのエラーもシステムロールとして扱う
+                                content: format!("---\n{}\n---", error_message_content),
+                            };
+                            // ツールエラーをエージェントの履歴に追加し、ログにも書き込む
+                            agent_locked.add_message_to_history(tool_error_message.clone());
                         }
-                    };
-
-                    yield Ok(event);
-                    {
-                        let mut agent_locked = self_arc_mutex.lock().await;
-                        agent_locked.add_message_to_history(tool_message.clone());
                     }
-                    loop_messages.push(tool_message);
 
+                    // ループの次のイテレーションのためにメッセージ履歴を更新
+                    {
+                        let agent_locked = self_arc_mutex.lock().await;
+                        _loop_messages = agent_locked.messages.clone();
+                    }
 
                     yield Ok(AgentEvent::Thinking("AI is considering the tool's result...".to_string()));
-                    // ループを続行してAIに再度思考させる
+                    // ツール結果をAIに処理させ、再度思考させるためにループを続行
                 } else {
-                    // ツール呼び出しがなければループを終了
+                    // AIの応答でツール呼び出しが検出されなかった
+                    // 会話のターンが完了。ループを終了
                     break;
-                }""
+                }
+            }
         };
 
         Ok(Box::pin(agent_stream))
