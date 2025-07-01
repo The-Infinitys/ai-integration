@@ -214,7 +214,7 @@ fn print_message(message: &ChatMessage, syntax_set: &SyntaxSet, theme: &Theme) {
             let syntax = syntax_set
                 .find_syntax_by_token(code_block_lang)
                 .unwrap_or_else(|| syntax_set.find_syntax_by_extension("txt").unwrap());
-            let mut highlighter = HighlightLines::new(&syntax, theme);
+            let mut highlighter = HighlightLines::new(syntax, theme);
             let highlighted_line = match highlighter.highlight_line(line_str.trim_end(), syntax_set) {
                 Ok(regions) => as_24_bit_terminal_escaped(&regions[..], false),
                 Err(_) => line_str.to_string(), // Fallback to raw line if highlighting fails

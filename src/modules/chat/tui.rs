@@ -104,10 +104,8 @@ impl TuiApp {
             loop {
                 if event::poll(Duration::from_millis(100)).unwrap() {
                     if let Event::Key(key) = event::read().unwrap() {
-                        if key.kind == KeyEventKind::Press {
-                            if event_sender_clone.send(TuiEvent::Input(key)).is_err() {
-                                break; // Stop if receiver is dropped
-                            }
+                        if key.kind == KeyEventKind::Press && event_sender_clone.send(TuiEvent::Input(key)).is_err() {
+                            break; // Stop if receiver is dropped
                         }
                     }
                 }
@@ -301,7 +299,7 @@ impl TuiApp {
                     .syntax_set
                     .find_syntax_by_token(code_block_lang)
                     .unwrap_or_else(|| self.syntax_set.find_syntax_by_extension("txt").unwrap());
-                let mut code_highlighter = HighlightLines::new(&syntax, &self.theme);
+                let mut code_highlighter = HighlightLines::new(syntax, &self.theme);
                 let highlighted_line: String = match code_highlighter.highlight_line(line_str.trim_end(), &self.syntax_set) {
                     Ok(regions) => as_24_bit_terminal_escaped(&regions[..], false),
                     Err(_) => line_str.to_string(), // Fallback to raw line if highlighting fails
