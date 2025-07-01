@@ -62,8 +62,11 @@ pub enum AgentEvent {
     YamlParseError(String, String), // error message, yaml content
 }
 
-/// AIの応答からツール呼び出しを抽出・パースするヘルパー関数
-/// `---` または ` ``` の開始/終了マーカー、および ` ```tool_call:` や ` ```yaml` のような言語指定に対応。
+/// AIの応答からツール呼び出しを抽出・パースするヘルパー関数。
+/// `---` または ` ``` ` で囲まれたブロックを検索します。
+/// ブロックに `tool_call` という言語指定子があるか、ブロックの内容に `tool_name:` または `tool_call:` が含まれている場合に、
+/// そのブロックをツール呼び出しの候補と見なします。
+/// YAMLのパースは、`tool_call`キーを持つオブジェクトと、持たないオブジェクトの両方の形式に対応しています。
 fn extract_tool_call_from_response(response_content: &str) -> Option<(AiToolCall, String)> {
     let lines: Vec<&str> = response_content.lines().collect();
     let mut i = 0;
@@ -72,62 +75,62 @@ fn extract_tool_call_from_response(response_content: &str) -> Option<(AiToolCall
         let trimmed_line = lines[i].trim();
 
         // 開始マーカーの検出: "---" または "```"
-        let (is_start_marker, _marker_len) = if trimmed_line.starts_with("---") {
-            (true, "---".len())
-        } else if trimmed_line.starts_with("```") {
-            (true, "```".len())
-        } else {
-            (false, 0)
-        };
+        let is_start_marker = trimmed_line.starts_with("---") || trimmed_line.starts_with("```");
 
         if is_start_marker {
             let mut block_content = String::new();
-            let mut current_line_idx = i + 1; // マーカーの次の行から開始
+            let mut current_line_idx = i + 1;
 
-            // マーカーの直後に言語指定や `tool_call:` が続く場合の処理
-            let content_after_marker = trimmed_line
-                .strip_prefix("---")
-                .or_else(|| trimmed_line.strip_prefix("```"));
-            if let Some(remainder) = content_after_marker {
-                let stripped_remainder = remainder.trim();
-                // 残りの部分が空でなく、かつ言語指定やtool_call:と判断できる場合、この行の残りをコンテンツに含める
-                if !stripped_remainder.is_empty()
-                    && (stripped_remainder.starts_with("tool_call:")
-                        || stripped_remainder == "yaml"
-                        || stripped_remainder == "json")
-                {
-                    block_content.push_str(stripped_remainder);
-                    block_content.push('\n');
-                }
-            }
+            // 開始マーカーの言語指定子を確認
+            let lang_specifier = if trimmed_line.starts_with("---") {
+                trimmed_line.strip_prefix("---").unwrap_or("").trim()
+            } else {
+                trimmed_line.strip_prefix("```").unwrap_or("").trim()
+            };
+            // `tool_call`で始まる、または`yaml`,`json`と完全一致する場合にフラグを立てる
+            let is_explicit_tool_call = lang_specifier.starts_with("tool_call") || lang_specifier == "yaml" || lang_specifier == "json";
 
             // ブロックの本体を抽出
             while current_line_idx < lines.len() {
-                let inner_trimmed_line = lines[current_line_idx].trim();
+                let inner_line = lines[current_line_idx];
+                let inner_trimmed_line = inner_line.trim();
 
                 // 終了マーカーの検出
                 if inner_trimmed_line == "---" || inner_trimmed_line == "```" {
-                    // `tool_call:` キーが含まれているか確認
-                    if block_content.contains("tool_call:") {
-                        match serde_yaml::from_str::<AiToolCall>(&block_content) {
-                            Ok(call) => {
-                                // ツール呼び出しブロックより前の内容を抽出
-                                let pre_tool_content = lines[0..i].join("\n");
-                                return Some((call, pre_tool_content));
-                            }
-                            Err(_) => {
-                                // パースエラーが発生した場合、このブロックはツール呼び出しとして認識しない
-                                // そのため、Noneを返して他のブロックを試すか、通常のテキストとして扱う
-                                return None;
-                            }
+                    // ブロックがツール呼び出しかどうかを判断
+                    // 明示的な指定、または内容に `tool_name:` か `tool_call:` が含まれる場合
+                    let is_potential_tool_call = is_explicit_tool_call
+                        || block_content.contains("tool_name:")
+                        || block_content.contains("tool_call:");
+
+                    if is_potential_tool_call {
+                        // ツール呼び出しのパースを試みる
+                        // 最初に {"tool_call": ...} の形式を試す
+                        #[derive(Debug, Deserialize)]
+                        struct ToolCallWrapper {
+                            tool_call: AiToolCall,
                         }
-                    } else {
-                        // `tool_call:` が見つからない場合は、このブロックはツール呼び出しではない
-                        break;
+
+                        let call = if let Ok(wrapper) = serde_yaml::from_str::<ToolCallWrapper>(&block_content) {
+                            Some(wrapper.tool_call)
+                        } else if let Ok(direct_call) = serde_yaml::from_str::<AiToolCall>(&block_content) {
+                            // 次に直接 AiToolCall の形式を試す
+                            Some(direct_call)
+                        } else {
+                            None
+                        };
+
+                        if let Some(parsed_call) = call {
+                            // パース成功
+                            let pre_tool_content = lines[0..i].join("\n");
+                            return Some((parsed_call, pre_tool_content));
+                        }
                     }
+                    // パース失敗またはツール呼び出しではない場合、このブロックは無視して次の行から検索を続ける
+                    break;
                 }
 
-                block_content.push_str(lines[current_line_idx]);
+                block_content.push_str(inner_line);
                 block_content.push('\n');
                 current_line_idx += 1;
             }
