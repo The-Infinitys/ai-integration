@@ -118,7 +118,6 @@ impl App {
 
     async fn handle_chat_session(&mut self) -> Result<()> {
         let mut full_ai_response = String::new();
-        let mut tool_output_received_this_turn = false;
 
         let mut stream = self.chat_session.start_realtime_chat().await?;
 
@@ -146,7 +145,7 @@ impl App {
                             );
                             println!("{}", "---------------------------------".yellow().bold());
                             io::stdout().flush().unwrap();
-                            tool_output_received_this_turn = true;
+
                         }
                         AgentEvent::ToolResult(tool_name, result) => {
                             println!(
@@ -162,7 +161,7 @@ impl App {
                             );
                             println!("{}", "-----------------------------".green().bold());
                             io::stdout().flush().unwrap();
-                            tool_output_received_this_turn = true;
+
                         }
                         AgentEvent::ToolError(tool_name, error_message) => {
                             eprintln!(
@@ -173,7 +172,7 @@ impl App {
                             eprintln!("{}: {}", "エラー".red(), error_message.red());
                             eprintln!("{}", "--------------------------".red().bold());
                             io::stdout().flush().unwrap();
-                            tool_output_received_this_turn = true;
+
                         }
                         // 他のイベントも必要に応じてここで処理
                         _ => {}
@@ -190,11 +189,7 @@ impl App {
             }
         }
 
-        if !tool_output_received_this_turn && !full_ai_response.is_empty() {
-            self.chat_session
-                .add_assistant_message_to_history(full_ai_response)
-                .await;
-        }
+        
 
         Ok(())
     }
