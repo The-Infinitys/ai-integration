@@ -449,19 +449,43 @@ impl TuiApp {
                 });
             }
             "/help" => {
-                let help_text = "Available commands:\n\n                - /help: Show this help message\n\n                - /shell <command>: Execute a shell command via the AI\n\n                - /model <model_name>: Switch AI model\n\n                - /list models: List available models\n\n                - /revert: Undo your last message and the AI's response\n\n                - /clear: Clear the chat history\n\n                - /log: Show the path to the current log file\n\n                - /exit or /quit: Exit the application\n\n                Shortcuts:\n\n                - !: Enter shell mode (same as typing /shell )\n\n                - Ctrl+C: Cancel the current AI response\n\n                - Esc: Quit the application"
+                let help_text = "Available commands:
+
+                - /help: Show this help message
+
+                - /shell <command>: Execute a shell command via the AI
+
+                - /model <model_name>: Switch AI model
+
+                - /list models: List available models
+
+                - /revert: Undo your last message and the AI's response
+
+                - /clear: Clear the chat history
+
+                - /log: Show the path to the current log file
+
+                - /exit or /quit: Exit the application
+
+                Shortcuts:
+
+                - !: Enter shell mode (same as typing /shell )
+
+                - Ctrl+C: Cancel the current AI response
+
+                - Esc: Quit the application"
                     .to_string();
                 self.messages.push(ChatMessage {
                     role: ChatRole::System,
                     content: help_text,
                 });
             }
-            """            _ => {
+            _ => {
                 self.set_status_message(
                     format!("Unknown command: {}", command_name),
                     Color::Red,
                 );
-            }""
+            }
         }
     }
 
@@ -507,7 +531,9 @@ impl TuiApp {
             }
             AgentEvent::ToolCallDetected(tool_call) => {
                 self.tool_output_buffer.push_str(&format!(
-                    "\n--- Tool Call: {} ---\n{}",
+                    "
+--- Tool Call: {} ---
+{}",
                     tool_call.tool_name,
                     serde_yaml::to_string(&tool_call.parameters).unwrap_or_default()
                 ));
@@ -518,7 +544,10 @@ impl TuiApp {
             }
             AgentEvent::ToolResult(tool_name, result) => {
                 self.tool_output_buffer.push_str(&format!(
-                    "\n--- Tool Result ({}) ---\n{}\n",
+                    "
+--- Tool Result ({}) ---
+{}
+",
                     tool_name,
                     serde_yaml::to_string(&result).unwrap_or_default()
                 ));
@@ -526,7 +555,10 @@ impl TuiApp {
             }
             AgentEvent::ToolError(tool_name, error_message) => {
                 self.tool_output_buffer.push_str(&format!(
-                    "\n--- Tool Error ({}) ---\nError: {}\n",
+                    "
+--- Tool Error ({}) ---
+Error: {}
+",
                     tool_name, error_message
                 ));
                 self.set_status_message(format!("Tool {} failed.", tool_name), Color::Red);
@@ -546,15 +578,18 @@ impl TuiApp {
     }
 
     fn handle_models_listed(&mut self, models: serde_json::Value) {
-        let mut model_list_message = String::from("Available Models:\n");
+        let mut model_list_message = String::from("Available Models:
+");
         if let Some(model_list) = models["models"].as_array() {
             for model in model_list {
                 if let Some(name) = model["name"].as_str() {
-                    model_list_message.push_str(&format!("- {}\n", name));
+                    model_list_message.push_str(&format!("- {}
+", name));
                 }
             }
         } else {
-            model_list_message.push_str("No models found or unexpected response format.\n");
+            model_list_message.push_str("No models found or unexpected response format.
+");
         }
         self.messages.push(ChatMessage {
             role: ChatRole::System,

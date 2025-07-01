@@ -320,12 +320,22 @@ impl AIAgent {
                 }
 
                 // --- 4. AIの完全な応答を履歴に追加 ---
-                // ツール呼び出しがあった場合、ツール呼び出しより前の内容をAssistantメッセージとして追加
-                if call_tool_option.is_some() && !pre_tool_content.is_empty() {
+                if call_tool_option.is_some() {
+                    // ツール呼び出しがあった場合、ツール呼び出しより前の内容をAssistantメッセージとして追加
+                    if !pre_tool_content.is_empty() {
+                        let mut agent_locked = self_arc_mutex.lock().await;
+                        let assistant_message = ChatMessage {
+                            role: ChatRole::Assistant,
+                            content: pre_tool_content.clone(),
+                        };
+                        agent_locked.add_message_to_history(assistant_message.clone());
+                    }
+                } else if !full_ai_response_content.is_empty() {
+                    // ツール呼び出しがなく、AIの応答があった場合
                     let mut agent_locked = self_arc_mutex.lock().await;
                     let assistant_message = ChatMessage {
                         role: ChatRole::Assistant,
-                        content: pre_tool_content.clone(),
+                        content: full_ai_response_content.clone(),
                     };
                     agent_locked.add_message_to_history(assistant_message.clone());
                 }

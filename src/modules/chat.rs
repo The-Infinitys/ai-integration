@@ -13,7 +13,6 @@ use tokio::sync::Mutex;
 #[derive(Clone)]
 pub struct ChatSession {
     agent: Arc<Mutex<AIAgent>>,
-    session_messages: Vec<ChatMessage>,
     pub current_model: String,
 }
 
@@ -27,7 +26,6 @@ impl ChatSession {
         )));
         ChatSession {
             agent,
-            session_messages: vec![],
             current_model: default_model,
         }
     }
@@ -41,7 +39,6 @@ impl ChatSession {
             content,
         };
         agent_locked.add_message_to_history(user_message.clone());
-        self.session_messages.push(user_message);
     }
 
     /// ツール実行を伴うリアルタイムチャットセッションを開始および管理します。
@@ -61,29 +58,8 @@ impl ChatSession {
     /// 最後のユーザーメッセージとその後のAIの応答を履歴から削除します。
     pub async fn revert_last_turn(&mut self) {
         let mut agent_locked = self.agent.lock().await;
-        let initial_history_len = agent_locked.messages.len();
-
         // エージェントの履歴を元に戻す
         agent_locked.revert_last_user_message();
-
-        // セッションメッセージの履歴を元に戻す
-        if self
-            .session_messages
-            .last()
-            .is_some_and(|m| m.role == ChatRole::User)
-        {
-            self.session_messages.pop();
-        }
-
-        // エージェントの履歴とセッションの履歴を同期させる
-        while let Some(msg) = agent_locked.messages.last() {
-            if msg.role != ChatRole::User && agent_locked.messages.len() >= initial_history_len {
-                agent_locked.messages.pop();
-            } else {
-                break;
-            }
-        }
-        self.session_messages = agent_locked.messages.clone();
     }
 
     /// AIエージェントが使用するモデルを設定します。
@@ -105,26 +81,15 @@ impl ChatSession {
 
     /// 現在のセッションメッセージのクローンを取得します。
     pub async fn get_messages(&self) -> Vec<ChatMessage> {
-        self.session_messages.clone()
+        let agent_locked = self.agent.lock().await;
+        agent_locked.messages.clone()
     }
 
-        /// AIの応答が完了した後、最終的なメッセージを履歴に追加します。
-    pub async fn add_assistant_message_to_history(&mut self, content: String) {
-        let assistant_message = ChatMessage {
-            role: ChatRole::Assistant,
-            content,
-        };
-        // エージェントの履歴にも追加
-        let mut agent_locked = self.agent.lock().await;
-        agent_locked.add_message_to_history(assistant_message.clone());
-        // セッションの履歴にも追加
-        self.session_messages.push(assistant_message);
-    }
+        
 
     pub async fn clear_history(&mut self) {
         let mut agent_locked = self.agent.lock().await;
         agent_locked.clear_history();
-        self.session_messages.clear();
     }
 
     pub async fn get_log_path(&self) -> Option<String> {
