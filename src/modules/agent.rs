@@ -253,6 +253,23 @@ impl AIAgent {
         self.api.list_models().await
     }
 
+    /// Get the configured log file path
+    pub fn get_log_path(&self) -> Option<String> {
+        self.log_file_path.as_ref().map(|p| p.to_string_lossy().to_string())
+    }
+
+    /// Clear the chat history, keeping the initial system prompt
+    pub fn clear_history(&mut self) {
+        // Find the original system prompt
+        let system_prompt = self.messages.iter().find(|m| m.role == ChatRole::System).cloned();
+        
+        self.messages.clear();
+
+        if let Some(prompt) = system_prompt {
+            self.messages.push(prompt);
+        }
+    }
+
     /// ツール使用を伴うリアルタイムチャットセッションを開始
     /// この関数は、AIの応答をストリームし、ツール呼び出しを検出して実行し、その結果をAIにフィードバックして次の思考を促します。
     pub async fn chat_with_tools_realtime(
@@ -341,8 +358,8 @@ impl AIAgent {
 
                             let mut agent_locked = self_arc_mutex.lock().await;
                             let tool_output_message = ChatMessage {
-                                role: ChatRole::Tool, // ツールの結果はToolロールとして扱う
-                                content: format!("---\n{}\n---", tool_output_message_content),
+                                role: ChatRole::User, // ロールをUserに変更
+                                content: format!("Tool result for '{}':\n---\n{}\n---", call_tool.tool_name, tool_output_message_content),
                             };
                             // ツール結果をエージェントの履歴に追加し、ログにも書き込む
                             agent_locked.add_message_to_history(tool_output_message.clone());
@@ -359,8 +376,8 @@ impl AIAgent {
 
                             let mut agent_locked = self_arc_mutex.lock().await;
                             let tool_error_message = ChatMessage {
-                                role: ChatRole::Tool, // ツールのエラーもToolロールとして扱う
-                                content: format!("---\n{}\n---", error_message_content),
+                                role: ChatRole::User, // ロールをUserに変更
+                                content: format!("Error from tool '{}':\n---\n{}\n---", call_tool.tool_name, error_message_content),
                             };
                             // ツールエラーをエージェントの履歴に追加し、ログにも書き込む
                             agent_locked.add_message_to_history(tool_error_message.clone());

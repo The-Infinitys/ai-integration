@@ -108,7 +108,7 @@ impl ChatSession {
         self.session_messages.clone()
     }
 
-    /// AIの応答が完了した後、最終的なメッセージを履歴に追加します。
+        /// AIの応答が完了した後、最終的なメッセージを履歴に追加します。
     pub async fn add_assistant_message_to_history(&mut self, content: String) {
         let assistant_message = ChatMessage {
             role: ChatRole::Assistant,
@@ -119,5 +119,16 @@ impl ChatSession {
         agent_locked.add_message_to_history(assistant_message.clone());
         // セッションの履歴にも追加
         self.session_messages.push(assistant_message);
+    }
+
+    pub async fn clear_history(&mut self) {
+        let mut agent_locked = self.agent.lock().await;
+        agent_locked.clear_history();
+        self.session_messages.clear();
+    }
+
+    pub async fn get_log_path(&self) -> Option<String> {
+        let agent_locked = self.agent.lock().await;
+        agent_locked.get_log_path()
     }
 }

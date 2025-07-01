@@ -1,26 +1,27 @@
-use crate::modules::agent::AgentEvent;
 use crate::modules::agent::api::{AIProvider, ChatMessage, ChatRole};
+use crate::modules::agent::AgentEvent;
 use crate::modules::chat::ChatSession;
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures_util::stream::StreamExt;
 use ratatui::{
-    Terminal,
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph},
+    Terminal,
 };
 use std::{
     io::{self, Stdout},
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 enum TuiEvent {
     Input(KeyEvent),
@@ -48,6 +49,7 @@ pub struct TuiApp {
     message_list_state: ListState,
     is_ai_replying: bool,
     is_user_scrolling: bool,
+    chat_stream_handle: Option<JoinHandle<()>>,
 }
 
 impl TuiApp {
@@ -68,25 +70,16 @@ impl TuiApp {
                 },
                 ChatMessage {
                     role: ChatRole::System,
-                    content: "Type '/exit' or Esc to quit. Use Up/Down arrows to scroll."
-                        .to_string(),
+                    content: "Type '/help' for commands. Press '!' for shell mode.".to_string(),
                 },
                 ChatMessage {
                     role: ChatRole::System,
-                    content: "Type '/model <model_name>' to change model.".to_string(),
-                },
-                ChatMessage {
-                    role: ChatRole::System,
-                    content: "Type '/list models' to list available models.".to_string(),
-                },
-                ChatMessage {
-                    role: ChatRole::System,
-                    content: "Type '/revert' to undo the last turn.".to_string(),
+                    content: "While AI is replying: Ctrl+C to cancel, Esc to quit.".to_string(),
                 },
             ],
             input_scroll: 0,
             should_quit: false,
-            status_message: "Welcome! Start typing...".to_string(),
+            status_message: "Welcome! Type /help for commands.".to_string(),
             last_status_update: Instant::now(),
             event_sender,
             event_receiver,
@@ -96,6 +89,7 @@ impl TuiApp {
             message_list_state: ListState::default(),
             is_ai_replying: false,
             is_user_scrolling: false,
+            chat_stream_handle: None,
         }
     }
 
@@ -116,7 +110,9 @@ impl TuiApp {
                 if event::poll(Duration::from_millis(100)).unwrap() {
                     if let Event::Key(key) = event::read().unwrap() {
                         if key.kind == KeyEventKind::Press {
-                            event_sender_clone.send(TuiEvent::Input(key)).unwrap();
+                            if event_sender_clone.send(TuiEvent::Input(key)).is_err() {
+                                break; // Stop if receiver is dropped
+                            }
                         }
                     }
                 }
@@ -189,6 +185,7 @@ impl TuiApp {
             ));
         }
 
+        // Display live AI response and tool output
         if !self.ai_response_buffer.is_empty() {
             list_items.extend(self.create_list_items(
                 &self.ai_response_buffer,
@@ -197,11 +194,12 @@ impl TuiApp {
                 message_area_width,
             ));
         }
+
         if !self.tool_output_buffer.is_empty() {
             list_items.extend(self.create_list_items(
                 &self.tool_output_buffer,
                 "Tool: ",
-                Color::Magenta,
+                Color::Blue,
                 message_area_width,
             ));
         }
@@ -228,7 +226,7 @@ impl TuiApp {
         frame.render_stateful_widget(list, main_layout[0], &mut self.message_list_state);
 
         let input_title = if self.is_ai_replying {
-            "Input (AI is replying...)"
+            "Input (AI is replying... Ctrl+C to cancel)"
         } else {
             "Your Message"
         };
@@ -247,7 +245,9 @@ impl TuiApp {
         frame.render_widget(input_text, main_layout[1]);
 
         if !self.is_ai_replying {
-            let cursor_x = main_layout[1].x + 1 + (Span::from(self.input.as_str()).width() as u16)
+            let cursor_x = main_layout[1].x
+                + 1
+                + (Span::from(&self.input[..]).width() as u16)
                 - self.input_scroll;
             let cursor_y = main_layout[1].y + 1;
             frame.set_cursor_position((cursor_x, cursor_y));
@@ -262,7 +262,7 @@ impl TuiApp {
             .style(Style::default().fg(self.status_text_color));
         frame.render_widget(status_text, status_bar_layout[0]);
 
-        let help_text = Paragraph::new("Scroll: Up/Down | Quit: Esc")
+        let help_text = Paragraph::new("Scroll: Up/Down | Quit: Esc | Help: /help")
             .style(Style::default().fg(Color::DarkGray))
             .alignment(Alignment::Right);
         frame.render_widget(help_text, status_bar_layout[1]);
@@ -301,14 +301,23 @@ impl TuiApp {
 
     async fn handle_input_event(&mut self, key_event: KeyEvent, terminal_width: u16) -> Result<()> {
         if self.is_ai_replying {
-            if key_event.code == KeyCode::Esc {
-                self.should_quit = true;
+            match key_event.code {
+                KeyCode::Char('c') if key_event.modifiers == KeyModifiers::CONTROL => {
+                    self.cancel_ai_response();
+                }
+                KeyCode::Esc => {
+                    self.should_quit = true;
+                }
+                _ => {} // Ignore other keys
             }
             return Ok(());
         }
 
         match key_event.code {
             KeyCode::Enter => self.handle_enter().await,
+            KeyCode::Char('!') if self.input.is_empty() => {
+                self.input.push_str("/shell ");
+            }
             KeyCode::Char(c) => self.input.push(c),
             KeyCode::Backspace => {
                 self.input.pop();
@@ -326,7 +335,10 @@ impl TuiApp {
             KeyCode::Down => {
                 self.is_user_scrolling = true;
                 if let Some(selected) = self.message_list_state.selected() {
-                    self.message_list_state.select(Some(selected + 1));
+                    let count = self.messages.len(); // Use the correct count
+                    if selected < count - 1 {
+                        self.message_list_state.select(Some(selected + 1));
+                    }
                 } else if !self.messages.is_empty() {
                     self.message_list_state.select(Some(0));
                 }
@@ -373,9 +385,20 @@ impl TuiApp {
     async fn handle_command(&mut self, command: &str) {
         let parts: Vec<&str> = command.split_whitespace().collect();
         let command_name = parts.first().unwrap_or(&"");
+        let command_copy = command.to_string();
 
         match *command_name {
-            "/exit" => self.should_quit = true,
+            "/exit" | "/quit" => self.should_quit = true,
+            "/shell" => {
+                self.is_ai_replying = true;
+                self.messages.push(ChatMessage {
+                    role: ChatRole::User,
+                    content: command_copy.clone(),
+                });
+                self.set_status_message("Executing shell command...".to_string(), Color::Yellow);
+                self.chat_session.add_user_message(command_copy).await;
+                self.start_chat_stream();
+            }
             "/model" => {
                 if let Some(model_name) = parts.get(1) {
                     let sender = self.event_sender.clone();
@@ -383,9 +406,11 @@ impl TuiApp {
                     let mut chat_session = self.chat_session.clone();
                     tokio::spawn(async move {
                         if chat_session.set_model(model_name).await.is_ok() {
-                            sender.send(TuiEvent::ModelSet).unwrap();
+                            let _ = sender.send(TuiEvent::ModelSet);
                         }
                     });
+                } else {
+                    self.set_status_message("Usage: /model <model_name>".to_string(), Color::Red);
                 }
             }
             "/list" if parts.get(1) == Some(&"models") => {
@@ -393,37 +418,85 @@ impl TuiApp {
                 let chat_session = self.chat_session.clone();
                 tokio::spawn(async move {
                     match chat_session.list_models().await {
-                        Ok(models) => sender.send(TuiEvent::ModelsListed(models)).unwrap(),
-                        Err(e) => sender.send(TuiEvent::Error(e.to_string())).unwrap(),
+                        Ok(models) => {
+                            let _ = sender.send(TuiEvent::ModelsListed(models));
+                        }
+                        Err(e) => {
+                            let _ = sender.send(TuiEvent::Error(e.to_string()));
+                        }
                     }
                 });
             }
             "/revert" => {
                 self.chat_session.revert_last_turn().await;
                 self.messages = self.chat_session.get_messages().await;
-                self.event_sender.send(TuiEvent::Reverted).unwrap();
+                let _ = self.event_sender.send(TuiEvent::Reverted);
             }
-            _ => self.set_status_message(format!("Unknown command: {}", command), Color::Red),
+            "/clear" => {
+                self.chat_session.clear_history().await;
+                self.messages = self.chat_session.get_messages().await;
+                self.set_status_message("Chat history cleared.".to_string(), Color::Green);
+            }
+            "/log" => {
+                let log_path = self.chat_session.get_log_path().await;
+                let message = match log_path {
+                    Some(path) => format!("Log file is at: {}", path),
+                    None => "Logging is not configured.".to_string(),
+                };
+                self.messages.push(ChatMessage {
+                    role: ChatRole::System,
+                    content: message,
+                });
+            }
+            "/help" => {
+                let help_text = "Available commands:\n\n                - /help: Show this help message\n\n                - /shell <command>: Execute a shell command via the AI\n\n                - /model <model_name>: Switch AI model\n\n                - /list models: List available models\n\n                - /revert: Undo your last message and the AI's response\n\n                - /clear: Clear the chat history\n\n                - /log: Show the path to the current log file\n\n                - /exit or /quit: Exit the application\n\n                Shortcuts:\n\n                - !: Enter shell mode (same as typing /shell )\n\n                - Ctrl+C: Cancel the current AI response\n\n                - Esc: Quit the application"
+                    .to_string();
+                self.messages.push(ChatMessage {
+                    role: ChatRole::System,
+                    content: help_text,
+                });
+            }
+            """            _ => {
+                self.set_status_message(
+                    format!("Unknown command: {}", command_name),
+                    Color::Red,
+                );
+            }""
         }
     }
 
     fn start_chat_stream(&mut self) {
         let sender = self.event_sender.clone();
         let mut chat_session = self.chat_session.clone();
-        tokio::spawn(async move {
+
+        if let Some(handle) = self.chat_stream_handle.take() {
+            handle.abort();
+        }
+
+        let handle = tokio::spawn(async move {
             match chat_session.start_realtime_chat().await {
                 Ok(mut stream) => {
                     while let Some(event_result) = stream.next().await {
                         match event_result {
-                            Ok(event) => sender.send(TuiEvent::AgentEvent(event)).unwrap(),
-                            Err(e) => sender.send(TuiEvent::Error(e.to_string())).unwrap(),
+                            Ok(event) => {
+                                if sender.send(TuiEvent::AgentEvent(event)).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                let _ = sender.send(TuiEvent::Error(e.to_string()));
+                                break;
+                            }
                         }
                     }
-                    sender.send(TuiEvent::StreamComplete).unwrap();
                 }
-                Err(e) => sender.send(TuiEvent::Error(e.to_string())).unwrap(),
+                Err(e) => {
+                    let _ = sender.send(TuiEvent::Error(e.to_string()));
+                }
             }
+            let _ = sender.send(TuiEvent::StreamComplete);
         });
+        self.chat_stream_handle = Some(handle);
     }
 
     async fn handle_agent_event(&mut self, event: AgentEvent) {
@@ -433,44 +506,32 @@ impl TuiApp {
                 self.set_status_message("AI is typing...".to_string(), Color::LightBlue);
             }
             AgentEvent::ToolCallDetected(tool_call) => {
-                self.flush_ai_buffer_to_messages().await;
                 self.tool_output_buffer.push_str(&format!(
-                    "
---- Tool Call Detected ---
-Tool Name: {}
-Parameters: {}
--------------------------
-",
+                    "\n--- Tool Call: {} ---\n{}",
                     tool_call.tool_name,
                     serde_yaml::to_string(&tool_call.parameters).unwrap_or_default()
                 ));
-                self.set_status_message("Tool call detected.".to_string(), Color::Yellow);
+                self.set_status_message("Tool call detected...".to_string(), Color::Yellow);
+            }
+            AgentEvent::ToolExecuting(name) => {
+                self.set_status_message(format!("Executing: {}...", name), Color::Cyan);
             }
             AgentEvent::ToolResult(tool_name, result) => {
-                self.flush_ai_buffer_to_messages().await;
                 self.tool_output_buffer.push_str(&format!(
-                    "
---- Tool Result ({}) ---
-{}
----------------------------
-",
+                    "\n--- Tool Result ({}) ---\n{}\n",
                     tool_name,
                     serde_yaml::to_string(&result).unwrap_or_default()
                 ));
                 self.set_status_message(format!("Tool {} executed.", tool_name), Color::Green);
             }
             AgentEvent::ToolError(tool_name, error_message) => {
-                self.flush_ai_buffer_to_messages().await;
                 self.tool_output_buffer.push_str(&format!(
-                    "
---- Tool Error ({}) ---
-Error: {}
----------------------------
-",
+                    "\n--- Tool Error ({}) ---\nError: {}\n",
                     tool_name, error_message
                 ));
                 self.set_status_message(format!("Tool {} failed.", tool_name), Color::Red);
             }
+            AgentEvent::Thinking(msg) => self.set_status_message(msg, Color::LightBlue),
             _ => {}
         }
     }
@@ -485,25 +546,15 @@ Error: {}
     }
 
     fn handle_models_listed(&mut self, models: serde_json::Value) {
-        let mut model_list_message = String::from(
-            "Available Models:
-",
-        );
+        let mut model_list_message = String::from("Available Models:\n");
         if let Some(model_list) = models["models"].as_array() {
             for model in model_list {
                 if let Some(name) = model["name"].as_str() {
-                    model_list_message.push_str(&format!(
-                        "- {}
-",
-                        name
-                    ));
+                    model_list_message.push_str(&format!("- {}\n", name));
                 }
             }
         } else {
-            model_list_message.push_str(
-                "No models found or unexpected response format.
-",
-            );
+            model_list_message.push_str("No models found or unexpected response format.\n");
         }
         self.messages.push(ChatMessage {
             role: ChatRole::System,
@@ -524,46 +575,28 @@ Error: {}
     }
 
     async fn handle_stream_complete(&mut self) {
-        self.flush_ai_buffer_to_messages().await;
-        let tool_was_used = !self.tool_output_buffer.is_empty();
-        self.flush_tool_buffer_to_messages();
+        self.ai_response_buffer.clear();
+        self.tool_output_buffer.clear();
+        self.chat_stream_handle = None;
 
-        if tool_was_used {
-            // If a tool was used, the AI should continue thinking.
-            self.set_status_message(
-                "AI is considering the tool's result...".to_string(),
-                Color::Yellow,
-            );
-            self.is_ai_replying = true; // Keep the AI in a replying state
-            self.start_chat_stream(); // Start a new chat stream immediately
-        } else {
-            // If no tool was used, the turn is complete.
-            self.set_status_message("AI response complete.".to_string(), Color::Green);
+        self.messages = self.chat_session.get_messages().await;
+
+        self.set_status_message("Ready.".to_string(), Color::Green);
+        self.is_ai_replying = false;
+        self.is_user_scrolling = false;
+    }
+
+    fn cancel_ai_response(&mut self) {
+        if let Some(handle) = self.chat_stream_handle.take() {
+            handle.abort();
             self.is_ai_replying = false;
-        }
-    }
-
-    async fn flush_ai_buffer_to_messages(&mut self) {
-        if !self.ai_response_buffer.is_empty() {
-            let content = self.ai_response_buffer.clone();
-            self.chat_session
-                .add_assistant_message_to_history(content.clone())
-                .await;
-            self.messages.push(ChatMessage {
-                role: ChatRole::Assistant,
-                content,
-            });
             self.ai_response_buffer.clear();
-        }
-    }
-
-    fn flush_tool_buffer_to_messages(&mut self) {
-        if !self.tool_output_buffer.is_empty() {
+            self.tool_output_buffer.clear();
             self.messages.push(ChatMessage {
                 role: ChatRole::System,
-                content: self.tool_output_buffer.clone(),
+                content: "AI response cancelled by user.".to_string(),
             });
-            self.tool_output_buffer.clear();
+            self.set_status_message("AI response cancelled.".to_string(), Color::Yellow);
         }
     }
 

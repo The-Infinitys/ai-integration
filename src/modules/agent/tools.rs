@@ -133,7 +133,13 @@ impl ToolManager {
         if let Some(tool) = self.get_tool(name) {
             tool.execute(args).await
         } else {
-            Err(ToolError::NotFound(format!("Tool '{}' not found", name)))
+            let available_tools: Vec<String> = self.tools.keys().cloned().collect();
+            let error_message = format!(
+                "Tool '{}' not found. Available tools are: [{}]",
+                name,
+                available_tools.join(", ")
+            );
+            Err(ToolError::NotFound(error_message))
         }
     }
 }
