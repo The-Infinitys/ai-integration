@@ -1,6 +1,6 @@
 // src/modules/agent/api.rs
 pub mod ollama;
-
+pub mod gemini;
 pub use ollama::{ChatMessage, ChatRole, OllamaApiError};
 
 use ollama::OllamaApi;

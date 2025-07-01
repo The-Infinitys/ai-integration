@@ -446,6 +446,7 @@ Parameters: {}
                 self.set_status_message("Tool call detected.".to_string(), Color::Yellow);
             }
             AgentEvent::ToolResult(tool_name, result) => {
+                self.flush_ai_buffer_to_messages().await;
                 self.tool_output_buffer.push_str(&format!(
                     "
 --- Tool Result ({}) ---
@@ -458,6 +459,7 @@ Parameters: {}
                 self.set_status_message(format!("Tool {} executed.", tool_name), Color::Green);
             }
             AgentEvent::ToolError(tool_name, error_message) => {
+                self.flush_ai_buffer_to_messages().await;
                 self.tool_output_buffer.push_str(&format!(
                     "
 --- Tool Error ({}) ---

@@ -169,13 +169,26 @@ impl AIAgent {
         // ログファイルを初期化
         let log_file_path = Self::initialize_log_file();
 
-        AIAgent {
+        let mut agent = AIAgent {
             api,
             messages: vec![],
             tool_manager,
             default_prompt_template,
             log_file_path, // 初期化したパスを設定
-        }
+        };
+
+        // システムプロンプトを初期化時に追加
+        let tool_manager_schemas = agent.tool_manager.get_tool_json_schemas();
+        let formatted_prompt = agent.default_prompt_template
+            .replace("{{TOOLS_JSON_SCHEMA}}", &tool_manager_schemas.to_string());
+
+        let system_message = ChatMessage {
+            role: ChatRole::System,
+            content: formatted_prompt,
+        };
+        agent.add_message_to_history(system_message);
+
+        agent
     }
 
     /// ログファイルの初期化とパス生成
@@ -250,64 +263,14 @@ impl AIAgent {
             // ループ内で使用するメッセージリストのクローン
             let mut _loop_messages = initial_messages.clone();
 
-            // システムプロンプトが会話の開始時に一度だけ挿入されたことを示すフラグ
-            let mut system_prompt_added = false;
-
-            // 初期メッセージをログに記録
-            // add_message_to_history は内部で write_message_to_log を呼び出すため、
-            // ここでは直接 loop_messages を操作せず、agent_locked.messages を更新し、ログに書き込む
-            {
-                let mut agent_locked = self_arc_mutex.lock().await;
-                for msg in &initial_messages {
-                    agent_locked.messages.push(msg.clone()); // agent の内部履歴に直接追加
-                    agent_locked.write_message_to_log(msg); // ログにはここで書き込む
-                }
-                // agent_locked.messages が更新されたので、loop_messages もそれに合わせる
-                _loop_messages = agent_locked.messages.clone();
-            }
-
             loop {
                 // --- 1. 最新の状態を取得し、API呼び出しの準備をする ---
-                let (api_clone, tool_manager_schemas, default_prompt_template_clone) = {
+                let api_clone = {
                     let agent_locked = self_arc_mutex.lock().await;
-                    (
-                        agent_locked.api.clone(), // AIApiのクローン
-                        agent_locked.tool_manager.get_tool_json_schemas(), // ツールのJSONスキーマ
-                        agent_locked.default_prompt_template.clone(), // デフォルトプロンプトテンプレート
-                    )
+                    agent_locked.api.clone() // AIApiのクローン
                 };
 
-                // --- 2. システムプロンプトを注入 (最初の一度のみ) ---
-                if !system_prompt_added {
-                    let formatted_prompt = default_prompt_template_clone
-                        .replace("{{TOOLS_JSON_SCHEMA}}", &tool_manager_schemas.to_string());
-
-                    let system_message = ChatMessage {
-                        role: ChatRole::System,
-                        content: formatted_prompt,
-                    };
-
-                    // ツールスキーマを含むSystemメッセージが既に履歴に存在するかを確認
-                    let has_system_prompt_already = _loop_messages.iter()
-                        .any(|msg| msg.role == ChatRole::System && msg.content.contains("TOOLS_JSON_SCHEMA"));
-
-                    if !has_system_prompt_already {
-                        // ユーザーメッセージの直前、またはリストの最後に挿入
-                        let insert_index = if let Some(pos) = _loop_messages.iter().rposition(|m| m.role == ChatRole::User) {
-                            pos
-                        } else {
-                            _loop_messages.len()
-                        };
-                        _loop_messages.insert(insert_index, system_message.clone());
-
-                        // agent の履歴にも追加し、ログにも書き込む (add_message_to_history経由)
-                        {
-                            let mut agent_locked = self_arc_mutex.lock().await;
-                            agent_locked.add_message_to_history(system_message.clone());
-                        }
-                    }
-                    system_prompt_added = true; // システムプロンプトが追加されたことをマーク
-                }
+                
 
                 // --- 3. AI応答ストリームを取得 ---
                 let mut ai_response_stream = api_clone
@@ -322,13 +285,14 @@ impl AIAgent {
                     match chunk_result {
                         Ok(chunk) => {
                             full_ai_response_content.push_str(&chunk);
-                            yield Ok(AgentEvent::AiResponseChunk(chunk.clone())); // UIにチャンクを送信
-
                             // 蓄積されたコンテンツからツール呼び出しのパースを試みる
                             if let Some(call_tool) = extract_tool_call_from_response(&full_ai_response_content) {
                                 call_tool_option = Some(call_tool);
                                 // ツール呼び出しが検出されたら、AIのストリームの受信を停止
                                 break 'stream_loop;
+                            } else {
+                                // ツール呼び出しがまだ検出されていない場合のみ、チャンクをUIに送信
+                                yield Ok(AgentEvent::AiResponseChunk(chunk.clone()));
                             }
                         }
                         Err(e) => {
