@@ -1,196 +1,232 @@
-use crate::modules::agent::AgentEvent;
-use crate::modules::agent::api::AIProvider;
-use crate::modules::chat::ChatSession; // 親モジュールからChatSessionをインポート
+use crate::modules::agent::api::{AIProvider, ChatMessage, ChatRole};
+use crate::modules::chat::ChatSession;
 use anyhow::Result;
 use colored::*;
 use futures_util::stream::StreamExt;
+use rustyline::error::ReadlineError;
+use rustyline::Editor;
 use std::io::{self, Write};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{Theme, ThemeSet};
+use syntect::parsing::{SyntaxSet};
+use syntect::util::{LinesWithEndings, as_24_bit_terminal_escaped};
 
-/// Represents the main application.
-pub struct App {
-    chat_session: ChatSession,
-}
+pub async fn run_cli(provider: AIProvider, base_url: String, default_model: String) -> Result<()> {
+    let mut chat_session = ChatSession::new(provider, base_url, default_model.clone());
 
-impl App {
-    /// Creates a new App instance.
-    pub fn new(provider: AIProvider, base_url: String, default_model: String) -> Self {
-        let chat_session = ChatSession::new(provider, base_url, default_model);
-        App { chat_session }
+    let syntax_set = SyntaxSet::load_defaults_newlines();
+    let theme = ThemeSet::load_defaults().themes["base16-ocean.dark"].clone();
+
+    // Display initial messages
+    let initial_messages = chat_session.get_messages().await;
+    for message in initial_messages {
+        if message.role == ChatRole::System && message.content.contains("TOOLS_YAML_SCHEMA") {
+            // Skip the main system prompt
+            continue;
+        }
+        print_message(&message, &syntax_set, &theme);
     }
 
-    /// Runs the main application loop.
-    pub async fn run(&mut self) -> std::io::Result<()> {
-        println!(
-            "{}: {}",
-            "Default Ollama Model".cyan().bold(),
-            self.chat_session.current_model.cyan()
-        );
+    let mut rl = Editor::<(), _>::new()?;
+    if rl.load_history("history.txt").is_err() {
+        println!("No previous history.");
+    }
 
-        println!("\n{}", "AI Integration Chat Session".purple().bold());
-        println!("{}", "'/exit' と入力して終了します。".blue());
-        println!(
-            "{}",
-            "'/model <モデル名>' と入力してモデルを変更します。".blue()
-        );
-        println!(
-            "{}",
-            "'/list models' と入力して利用可能なモデルを表示します。".blue()
-        );
-        println!(
-            "{}",
-            "'/revert' と入力して最後のターンを元に戻します。".blue()
-        );
-
-        loop {
-            print!("\n{}: ", "あなた".blue().bold());
-            io::stdout().flush()?;
-
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            let input = input.trim();
-
-            if input.eq_ignore_ascii_case("/exit") {
+    loop {
+        let readline = rl.readline("\n> ");
+        let input = match readline {
+            Ok(line) => {
+                rl.add_history_entry(line.as_str());
+                line
+            }
+            Err(ReadlineError::Interrupted) => {
+                println!("Ctrl-C");
                 break;
-            } else if input.starts_with("/model ") {
-                let model_name = input.trim_start_matches("/model ").trim().to_string();
-                if let Err(e) = self.chat_session.set_model(model_name).await {
-                    eprintln!(
-                        "{}: {}",
-                        "モデルの設定中にエラーが発生しました".red().bold(),
-                        e.to_string().red()
-                    );
-                } else {
-                    println!(
-                        "{}: {}",
-                        "モデルを設定しました".cyan().bold(),
-                        self.chat_session.current_model.cyan()
-                    );
-                }
-                continue;
-            } else if input.eq_ignore_ascii_case("/list models") {
-                match self.chat_session.list_models().await {
-                    Ok(models) => {
-                        println!("\n{}", "利用可能なモデル:".yellow().bold());
-                        if let Some(model_list) = models["models"].as_array() {
-                            for model in model_list {
-                                if let Some(name) = model["name"].as_str() {
-                                    println!("- {}", name.yellow());
-                                }
+            }
+            Err(ReadlineError::Eof) => {
+                println!("Ctrl-D");
+                break;
+            }
+            Err(err) => {
+                eprintln!("Error: {:?}", err);
+                break;
+            }
+        };
+
+        let input = input.trim().to_string();
+
+        if input.is_empty() {
+            continue;
+        }
+
+        if input.starts_with('/') {
+            handle_command(&mut chat_session, &input).await?;
+        } else {
+            chat_session.add_user_message(input.clone()).await;
+            let mut stream = chat_session.start_realtime_chat().await?;
+
+            let mut full_ai_response = String::new();
+            let mut full_tool_output = String::new();
+
+            while let Some(event_result) = stream.next().await {
+                match event_result {
+                    Ok(event) => {
+                        match event {
+                            crate::modules::agent::AgentEvent::AiResponseChunk(chunk) => {
+                                full_ai_response.push_str(&chunk);
+                                print!("{}", chunk);
+                                io::stdout().flush()?;
                             }
-                        } else {
-                            println!(
-                                "{}",
-                                "モデルが見つからないか、予期しない応答形式です。".red()
-                            );
+                            crate::modules::agent::AgentEvent::ToolCallDetected(tool_call) => {
+                                println!("\n--- Tool Call: {} ---", tool_call.tool_name.cyan().bold());
+                                println!("{}", serde_yaml::to_string(&tool_call.parameters).unwrap_or_default().yellow());
+                                full_tool_output.push_str(&format!("\n--- Tool Call: {} ---\n{}", tool_call.tool_name, serde_yaml::to_string(&tool_call.parameters).unwrap_or_default()));
+                            }
+                            crate::modules::agent::AgentEvent::ToolExecuting(name) => {
+                                println!("Executing: {}...", name.green());
+                            }
+                            crate::modules::agent::AgentEvent::ToolResult(tool_name, result) => {
+                                println!("\n--- Tool Result ({}) ---", tool_name.cyan().bold());
+                                println!("{}", serde_yaml::to_string(&result).unwrap_or_default().yellow());
+                                full_tool_output.push_str(&format!("\n--- Tool Result ({}) ---\n{}", tool_name, serde_yaml::to_string(&result).unwrap_or_default()));
+                            }
+                            crate::modules::agent::AgentEvent::ToolError(tool_name, error_message) => {
+                                eprintln!("\n--- Tool Error ({}) ---", tool_name.red().bold());
+                                eprintln!("Error: {}", error_message.red());
+                                full_tool_output.push_str(&format!("\n--- Tool Error ({}) ---\nError: {}", tool_name, error_message));
+                            }
+                            crate::modules::agent::AgentEvent::Thinking(msg) => {
+                                println!("Thinking: {}", msg.blue());
+                            }
+                            _ => {}
                         }
                     }
                     Err(e) => {
-                        eprintln!(
-                            "{}: {:?}",
-                            "モデルのリスト中にエラーが発生しました".red().bold(),
-                            e.to_string().red()
-                        );
+                        eprintln!("Error during stream: {}", e.to_string().red());
+                        break;
                     }
                 }
-                continue;
-            } else if input.eq_ignore_ascii_case("/revert") {
-                self.chat_session.revert_last_turn().await;
-                println!("\n{}", "最後のターンを元に戻しました。".yellow());
-                continue;
             }
+            println!(); // Newline after AI response
+        }
+    }
+    rl.save_history("history.txt")?;
+    Ok(())
+}
 
-            println!("{}: {}", "あなた".blue().bold(), input);
+async fn handle_command(chat_session: &mut ChatSession, command: &str) -> Result<()> {
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    let command_name = parts.first().unwrap_or(&"");
 
-            self.chat_session.add_user_message(input.to_string()).await;
-
-            if let Err(e) = self.handle_chat_session().await {
-                eprintln!(
-                    "{}: {}",
-                    "チャットセッション中にエラーが発生しました".red().bold(),
-                    e.to_string().red()
-                );
+    match *command_name {
+        "/exit" | "/quit" => {
+            println!("Exiting.");
+            std::process::exit(0);
+        }
+        "/model" => {
+            if let Some(model_name) = parts.get(1) {
+                chat_session.set_model(model_name.to_string()).await?;
+                println!("Model set to: {}", model_name.green());
+            } else {
+                println!("{}", "Usage: /model <model_name>".yellow());
             }
         }
-
-        println!("\n{}", "チャットセッションを終了しました。".purple().bold());
-        Ok(())
-    }
-
-    async fn handle_chat_session(&mut self) -> Result<()> {
-        let mut full_ai_response = String::new();
-
-        let mut stream = self.chat_session.start_realtime_chat().await?;
-
-        while let Some(event_result) = stream.next().await {
-            match event_result {
-                Ok(event) => {
-                    match event {
-                        AgentEvent::AiResponseChunk(chunk) => {
-                            print!("{}", chunk.bright_green());
-                            io::stdout().flush().unwrap();
-                            full_ai_response.push_str(&chunk);
+        "/list" if parts.get(1) == Some(&"models") => {
+            match chat_session.list_models().await {
+                Ok(models) => {
+                    println!("{}", "Available Models:".cyan().bold());
+                    if let Some(model_list) = models["models"].as_array() {
+                        for model in model_list {
+                            if let Some(name) = model["name"].as_str() {
+                                println!("- {}", name.blue());
+                            }
                         }
-                        AgentEvent::ToolCallDetected(tool_call) => {
-                            println!(
-                                "\n{}",
-                                "--- ツール呼び出しを検出しました ---".yellow().bold()
-                            );
-                            println!("{}: {}", "ツール名".yellow(), tool_call.tool_name.yellow());
-                            println!(
-                                "{}: {}",
-                                "パラメータ".yellow(),
-                                serde_yaml::to_string(&tool_call.parameters)
-                                    .unwrap_or_else(|_| "パラメータのシリアライズエラー".to_string())
-                                    .yellow()
-                            );
-                            println!("{}", "---------------------------------".yellow().bold());
-                            io::stdout().flush().unwrap();
-
-                        }
-                        AgentEvent::ToolResult(tool_name, result) => {
-                            println!(
-                                "\n{}: {}",
-                                "--- ツール結果".green().bold(),
-                                tool_name.green().bold()
-                            );
-                            println!(
-                                "{}",
-                                serde_yaml::to_string(&result)
-                                    .unwrap_or_else(|_| "ツール結果のシリアライズエラー".to_string())
-                                    .green()
-                            );
-                            println!("{}", "-----------------------------".green().bold());
-                            io::stdout().flush().unwrap();
-
-                        }
-                        AgentEvent::ToolError(tool_name, error_message) => {
-                            eprintln!(
-                                "\n{}: {}",
-                                "--- ツールエラー".red().bold(),
-                                tool_name.red().bold()
-                            );
-                            eprintln!("{}: {}", "エラー".red(), error_message.red());
-                            eprintln!("{}", "--------------------------".red().bold());
-                            io::stdout().flush().unwrap();
-
-                        }
-                        // 他のイベントも必要に応じてここで処理
-                        _ => {}
+                    } else {
+                        println!("{}", "No models found or unexpected response format.".yellow());
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "\n{}: {:?}",
-                        "ストリームエラー".red().bold(),
-                        e.to_string().red()
-                    );
-                    return Err(e);
+                    eprintln!("Error listing models: {}", e.to_string().red());
                 }
             }
         }
+        "/revert" => {
+            chat_session.revert_last_turn().await;
+            println!("{}", "Last turn reverted.".green());
+        }
+        "/clear" => {
+            chat_session.clear_history().await;
+            println!("{}", "Chat history cleared.".green());
+        }
+        "/log" => {
+            let log_path = chat_session.get_log_path().await;
+            let message = match log_path {
+                Some(path) => format!("Log file is at: {}", path.green()),
+                None => "Logging is not configured.".to_string().yellow().to_string(),
+            };
+            println!("{}", message);
+        }
+        "/help" => {
+            println!("{}", "Available commands:".cyan().bold());
+            println!("- /help: Show this help message");
+            println!("- /shell <command>: Execute a shell command via the AI");
+            println!("- /model <model_name>: Switch AI model");
+            println!("- /list models: List available models");
+            println!("- /revert: Undo your last message and the AI's response");
+            println!("- /clear: Clear the chat history");
+            println!("- /log: Show the path to the current log file");
+            println!("- /exit or /quit: Exit the application");
+        }
+        _ => {
+            println!("Unknown command: {}", command_name.red());
+        }
+    }
+    Ok(())
+}
 
-        
+fn print_message(message: &ChatMessage, syntax_set: &SyntaxSet, theme: &Theme) {
+    let mut in_code_block = false;
+    let mut code_block_lang = "txt";
 
-        Ok(())
+    let role_prefix = match message.role {
+        ChatRole::User => "You: ".yellow().bold(),
+        ChatRole::Assistant => "AI: ".green().bold(),
+        ChatRole::System => "System: ".cyan().bold(),
+        ChatRole::Tool => "Tool: ".blue().bold(),
+    };
+
+    for line_str in LinesWithEndings::from(&message.content) {
+        if line_str.trim().starts_with("```") {
+            in_code_block = !in_code_block;
+            if in_code_block {
+                let lang_specifier = line_str.trim().trim_start_matches("```").trim();
+                if !lang_specifier.is_empty() {
+                    code_block_lang = lang_specifier;
+                } else {
+                    code_block_lang = "txt";
+                }
+            }
+            println!("{}", line_str.trim_end()); // Print code block markers as-is
+            continue;
+        }
+
+        if in_code_block {
+            let syntax = syntax_set
+                .find_syntax_by_token(code_block_lang)
+                .unwrap_or_else(|| syntax_set.find_syntax_by_extension("txt").unwrap());
+            let mut highlighter = HighlightLines::new(&syntax, theme);
+            let highlighted_line = match highlighter.highlight_line(line_str.trim_end(), syntax_set) {
+                Ok(regions) => as_24_bit_terminal_escaped(&regions[..], false),
+                Err(_) => line_str.to_string(), // Fallback to raw line if highlighting fails
+            };
+            println!("{}", highlighted_line);
+        } else {
+            // For non-code blocks, apply role prefix and color
+            if line_str.trim().is_empty() {
+                println!(); // Preserve empty lines
+            } else {
+                println!("{}{}", role_prefix, line_str.trim_end());
+            }
+        }
     }
 }

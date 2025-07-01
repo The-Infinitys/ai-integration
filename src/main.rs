@@ -1,5 +1,4 @@
 use crate::modules::agent::api::AIProvider;
-use crate::modules::chat::cli::App as CliApp; // CLIアプリケーションのApp構造体をインポート
 use crate::modules::chat::tui::TuiApp; // TUIアプリケーションのTuiApp構造体をインポート
 use anyhow::{Result, anyhow}; // anyhowクレートからのResult型とanyhow!マクロを使用
 use crossterm::execute;
@@ -213,8 +212,7 @@ async fn main() -> Result<()> {
     if use_cli {
         // --cliオプションが指定された場合はCLIアプリケーションを起動
         println!("CLIアプリケーションを起動中...");
-        let mut app = CliApp::new(provider, base_url, default_model);
-        app.run().await?;
+        modules::chat::cli::run_cli(provider, base_url, default_model).await?;
     } else {
         // デフォルトでTUIアプリケーションを起動
         println!("TUIアプリケーションを起動中...");

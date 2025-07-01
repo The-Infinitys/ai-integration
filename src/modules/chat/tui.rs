@@ -57,6 +57,7 @@ pub struct TuiApp {
     chat_stream_handle: Option<JoinHandle<()>>,
     syntax_set: SyntaxSet,
     theme: Theme,
+    default_system_prompt: String,
 }
 
 impl TuiApp {
@@ -82,11 +83,13 @@ impl TuiApp {
             chat_stream_handle: None,
             syntax_set: SyntaxSet::load_defaults_newlines(),
             theme: ThemeSet::load_defaults().themes["base16-ocean.dark"].clone(),
+            default_system_prompt: include_str!("../default-prompt.md").to_string(),
         }
     }
 
     pub async fn run(&mut self) -> Result<()> {
         let mut terminal = setup_terminal()?;
+        self.messages = self.chat_session.get_messages().await;
         let res = self.run_app_loop(&mut terminal).await;
         restore_terminal(&mut terminal)?;
         res
@@ -163,6 +166,9 @@ impl TuiApp {
         let message_area_width = main_layout[0].width.saturating_sub(2);
 
         for message in &self.messages {
+            if message.role == ChatRole::System && message.content == self.default_system_prompt {
+                continue; // Skip rendering the default system prompt
+            }
             list_items.extend(self.create_list_item(
                 &message.content,
                 match message.role {
