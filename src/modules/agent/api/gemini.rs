@@ -29,6 +29,10 @@ impl AIApiTrait for GeminiApi {
         self.default_model = model_name;
     }
 
+    fn get_model(&self) -> String {
+        self.default_model.clone()
+    }
+
     async fn list_models(&self) -> Result<serde_json::Value, ApiError> {
         Ok(json!([
             { "name": "gemini-pro", "description": "Gemini Pro model" },

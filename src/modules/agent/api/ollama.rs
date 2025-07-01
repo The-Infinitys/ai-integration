@@ -54,6 +54,10 @@ impl AIApiTrait for OllamaApi {
         self.default_model = model_name;
     }
 
+    fn get_model(&self) -> String {
+        self.default_model.clone()
+    }
+
     async fn list_models(&self) -> Result<serde_json::Value, ApiError> {
         let url = format!("{}/api/tags", self.base_url);
         let response = self.client.get(&url).send().await?.json().await?;

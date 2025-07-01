@@ -1,20 +1,20 @@
-use crate::modules::agent::api::{AIProvider, ChatMessage, ChatRole};
 use crate::modules::agent::AgentEvent;
+use crate::modules::agent::api::{AIProvider, ChatMessage, ChatRole};
 use crate::modules::chat::ChatSession;
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use futures_util::stream::StreamExt;
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph},
-    Terminal,
 };
 use std::{
     io::{self, Stdout},
@@ -22,6 +22,11 @@ use std::{
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{ Theme, ThemeSet};
+use syntect::parsing::SyntaxSet;
+use syntect::util::{LinesWithEndings, as_24_bit_terminal_escaped};
 
 enum TuiEvent {
     Input(KeyEvent),
@@ -50,6 +55,8 @@ pub struct TuiApp {
     is_ai_replying: bool,
     is_user_scrolling: bool,
     chat_stream_handle: Option<JoinHandle<()>>,
+    syntax_set: SyntaxSet,
+    theme: Theme,
 }
 
 impl TuiApp {
@@ -59,24 +66,7 @@ impl TuiApp {
         Self {
             chat_session,
             input: String::new(),
-            messages: vec![
-                ChatMessage {
-                    role: ChatRole::System,
-                    content: format!("Default Model: {}", default_model),
-                },
-                ChatMessage {
-                    role: ChatRole::System,
-                    content: "AI Integration Chat Session".to_string(),
-                },
-                ChatMessage {
-                    role: ChatRole::System,
-                    content: "Type '/help' for commands. Press '!' for shell mode.".to_string(),
-                },
-                ChatMessage {
-                    role: ChatRole::System,
-                    content: "While AI is replying: Ctrl+C to cancel, Esc to quit.".to_string(),
-                },
-            ],
+            messages: vec![],
             input_scroll: 0,
             should_quit: false,
             status_message: "Welcome! Type /help for commands.".to_string(),
@@ -90,6 +80,8 @@ impl TuiApp {
             is_ai_replying: false,
             is_user_scrolling: false,
             chat_stream_handle: None,
+            syntax_set: SyntaxSet::load_defaults_newlines(),
+            theme: ThemeSet::load_defaults().themes["base16-ocean.dark"].clone(),
         }
     }
 
@@ -171,23 +163,27 @@ impl TuiApp {
         let message_area_width = main_layout[0].width.saturating_sub(2);
 
         for message in &self.messages {
-            let (prefix, color) = match message.role {
-                ChatRole::User => ("You: ", Color::Yellow),
-                ChatRole::Assistant => ("AI: ", Color::Green),
-                ChatRole::System => ("System: ", Color::Cyan),
-                ChatRole::Tool => ("Tool: ", Color::Blue),
-            };
-            list_items.extend(self.create_list_items(
+            list_items.extend(self.create_list_item(
                 &message.content,
-                prefix,
-                color,
+                match message.role {
+                    ChatRole::User => "You: ",
+                    ChatRole::Assistant => "AI: ",
+                    ChatRole::System => "System: ",
+                    ChatRole::Tool => "Tool: ",
+                },
+                match message.role {
+                    ChatRole::User => Color::Yellow,
+                    ChatRole::Assistant => Color::Green,
+                    ChatRole::System => Color::Cyan,
+                    ChatRole::Tool => Color::Blue,
+                },
                 message_area_width,
             ));
         }
 
         // Display live AI response and tool output
         if !self.ai_response_buffer.is_empty() {
-            list_items.extend(self.create_list_items(
+            list_items.extend(self.create_list_item(
                 &self.ai_response_buffer,
                 "AI: ",
                 Color::Green,
@@ -196,7 +192,7 @@ impl TuiApp {
         }
 
         if !self.tool_output_buffer.is_empty() {
-            list_items.extend(self.create_list_items(
+            list_items.extend(self.create_list_item(
                 &self.tool_output_buffer,
                 "Tool: ",
                 Color::Blue,
@@ -245,9 +241,7 @@ impl TuiApp {
         frame.render_widget(input_text, main_layout[1]);
 
         if !self.is_ai_replying {
-            let cursor_x = main_layout[1].x
-                + 1
-                + (Span::from(&self.input[..]).width() as u16)
+            let cursor_x = main_layout[1].x + 1 + (Span::from(&self.input[..]).width() as u16)
                 - self.input_scroll;
             let cursor_y = main_layout[1].y + 1;
             frame.set_cursor_position((cursor_x, cursor_y));
@@ -268,38 +262,75 @@ impl TuiApp {
         frame.render_widget(help_text, status_bar_layout[1]);
     }
 
-    fn create_list_items<'a>(
+    fn create_list_item<'a>(
         &self,
         content: &'a str,
         prefix: &'a str,
         color: Color,
         width: u16,
     ) -> Vec<ListItem<'a>> {
-        let mut items = Vec::new();
-        let wrapped_content = textwrap::wrap(content, width as usize);
-        let prefix_width = Span::from(prefix).width();
+        let mut list_items: Vec<ListItem<'a>> = Vec::new();
+        let mut in_code_block = false;
+        let mut code_block_lang = "txt";
+        let mut is_first_line_of_message = true;
 
-        for (i, line) in wrapped_content.iter().enumerate() {
-            let spans = if i == 0 {
-                vec![
-                    Span::styled(
-                        prefix,
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(line.to_string()),
-                ]
+        for line_str in LinesWithEndings::from(content) {
+            if line_str.trim().starts_with("```") {
+                in_code_block = !in_code_block;
+                if in_code_block {
+                    let lang_specifier = line_str.trim().trim_start_matches("```").trim();
+                    if !lang_specifier.is_empty() {
+                        code_block_lang = lang_specifier;
+                    } else {
+                        code_block_lang = "txt";
+                    }
+                }
+                list_items.push(ListItem::new(Text::from(Line::from(Span::raw(line_str.to_string())))));
+                is_first_line_of_message = false; // Reset after code block marker
+                continue;
+            }
+
+            if in_code_block {
+                let syntax = self
+                    .syntax_set
+                    .find_syntax_by_token(code_block_lang)
+                    .unwrap_or_else(|| self.syntax_set.find_syntax_by_extension("txt").unwrap());
+                let mut code_highlighter = HighlightLines::new(&syntax, &self.theme);
+                let highlighted_line: String = match code_highlighter.highlight_line(line_str.trim_end(), &self.syntax_set) {
+                    Ok(regions) => as_24_bit_terminal_escaped(&regions[..], false),
+                    Err(_) => line_str.to_string(), // Fallback to raw line if highlighting fails
+                };
+                list_items.push(ListItem::new(Text::from(Line::from(Span::raw(highlighted_line)))));
+                is_first_line_of_message = false; // Reset after code line
             } else {
-                vec![
-                    Span::raw(" ".repeat(prefix_width)),
-                    Span::raw(line.to_string()),
-                ]
-            };
-            items.push(ListItem::new(Text::from(Line::from(spans))));
+                let wrapped_content = textwrap::wrap(line_str.trim_end(), width as usize);
+                let prefix_width = Span::from(prefix).width();
+
+                for wrapped_line in wrapped_content.iter() {
+                    let spans = if is_first_line_of_message {
+                        vec![
+                            Span::styled(
+                                prefix,
+                                Style::default().fg(color).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::raw(wrapped_line.to_string()),
+                        ]
+                    } else {
+                        vec![
+                            Span::raw(" ".repeat(prefix_width)),
+                            Span::raw(wrapped_line.to_string()),
+                        ]
+                    };
+                    list_items.push(ListItem::new(Text::from(Line::from(spans))));
+                    is_first_line_of_message = false; // After the first line, set to false
+                }
+            }
         }
-        items
+        list_items
     }
 
     async fn handle_input_event(&mut self, key_event: KeyEvent, terminal_width: u16) -> Result<()> {
+        // AI応答中でもCtrl+CとEscは処理する
         if self.is_ai_replying {
             match key_event.code {
                 KeyCode::Char('c') if key_event.modifiers == KeyModifiers::CONTROL => {
@@ -308,22 +339,33 @@ impl TuiApp {
                 KeyCode::Esc => {
                     self.should_quit = true;
                 }
-                _ => {} // Ignore other keys
+                _ => {} // 他のキーは無視
             }
-            return Ok(());
         }
 
+        // AI応答中かどうかに関わらず処理するキー
         match key_event.code {
-            KeyCode::Enter => self.handle_enter().await,
-            KeyCode::Char('!') if self.input.is_empty() => {
+            KeyCode::Enter => {
+                if !self.is_ai_replying {
+                    // AI応答中はEnterを無視
+                    self.handle_enter().await;
+                }
+            }
+            KeyCode::Char('!') if self.input.is_empty() && !self.is_ai_replying => {
                 self.input.push_str("/shell ");
             }
-            KeyCode::Char(c) => self.input.push(c),
-            KeyCode::Backspace => {
+            KeyCode::Char(c) if !self.is_ai_replying => {
+                self.input.push(c);
+            }
+            KeyCode::Backspace if !self.is_ai_replying => {
                 self.input.pop();
             }
-            KeyCode::Left => self.input_scroll = self.input_scroll.saturating_sub(1),
-            KeyCode::Right => self.input_scroll = self.input_scroll.saturating_add(1),
+            KeyCode::Left if !self.is_ai_replying => {
+                self.input_scroll = self.input_scroll.saturating_sub(1);
+            }
+            KeyCode::Right if !self.is_ai_replying => {
+                self.input_scroll = self.input_scroll.saturating_add(1);
+            }
             KeyCode::Up => {
                 self.is_user_scrolling = true;
                 if let Some(selected) = self.message_list_state.selected() {
@@ -334,12 +376,44 @@ impl TuiApp {
             }
             KeyCode::Down => {
                 self.is_user_scrolling = true;
+                // ここでlist_items_countを正確に計算する必要がある
+                let mut temp_list_items: Vec<ListItem> = Vec::new();
+                let message_area_width = terminal_width.saturating_sub(2);
+
+                for message in &self.messages {
+                    temp_list_items.extend(self.create_list_item(
+                        &message.content,
+                        "",           // prefixはここでは不要
+                        Color::White, // colorはここでは不要
+                        message_area_width,
+                    ));
+                }
+                if !self.ai_response_buffer.is_empty() {
+                    temp_list_items.extend(self.create_list_item(
+                        &self.ai_response_buffer,
+                        "",
+                        Color::White,
+                        message_area_width,
+                    ));
+                }
+                if !self.tool_output_buffer.is_empty() {
+                    temp_list_items.extend(self.create_list_item(
+                        &self.tool_output_buffer,
+                        "",
+                        Color::White,
+                        message_area_width,
+                    ));
+                }
+                let list_items_count = temp_list_items.len();
+
                 if let Some(selected) = self.message_list_state.selected() {
-                    let count = self.messages.len(); // Use the correct count
-                    if selected < count - 1 {
+                    if selected < list_items_count - 1 {
                         self.message_list_state.select(Some(selected + 1));
+                    } else {
+                        // 既に一番下までスクロールしている場合
+                        self.is_user_scrolling = false; // ユーザーによるスクロールを解除
                     }
-                } else if !self.messages.is_empty() {
+                } else if !temp_list_items.is_empty() {
                     self.message_list_state.select(Some(0));
                 }
             }
@@ -347,12 +421,15 @@ impl TuiApp {
             _ => {}
         }
 
-        let input_width = Span::from(self.input.as_str()).width() as u16;
-        let input_area_width = terminal_width.saturating_sub(4);
-        if input_width > input_area_width + self.input_scroll {
-            self.input_scroll = input_width - input_area_width;
-        } else if self.input_scroll > 0 && input_width <= self.input_scroll {
-            self.input_scroll = input_width.saturating_sub(1);
+        // 入力フィールドのスクロールロジックはAI応答中以外のみ適用
+        if !self.is_ai_replying {
+            let input_width = Span::from(self.input.as_str()).width() as u16;
+            let input_area_width = terminal_width.saturating_sub(4);
+            if input_width > input_area_width + self.input_scroll {
+                self.input_scroll = input_width - input_area_width;
+            } else if self.input_scroll > 0 && input_width <= self.input_scroll {
+                self.input_scroll = input_width.saturating_sub(1);
+            }
         }
 
         Ok(())
@@ -481,10 +558,7 @@ impl TuiApp {
                 });
             }
             _ => {
-                self.set_status_message(
-                    format!("Unknown command: {}", command_name),
-                    Color::Red,
-                );
+                self.set_status_message(format!("Unknown command: {}", command_name), Color::Red);
             }
         }
     }
@@ -578,18 +652,25 @@ Error: {}
     }
 
     fn handle_models_listed(&mut self, models: serde_json::Value) {
-        let mut model_list_message = String::from("Available Models:
-");
+        let mut model_list_message = String::from(
+            "Available Models:
+",
+        );
         if let Some(model_list) = models["models"].as_array() {
             for model in model_list {
                 if let Some(name) = model["name"].as_str() {
-                    model_list_message.push_str(&format!("- {}
-", name));
+                    model_list_message.push_str(&format!(
+                        "- {}
+",
+                        name
+                    ));
                 }
             }
         } else {
-            model_list_message.push_str("No models found or unexpected response format.
-");
+            model_list_message.push_str(
+                "No models found or unexpected response format.
+",
+            );
         }
         self.messages.push(ChatMessage {
             role: ChatRole::System,
@@ -614,6 +695,7 @@ Error: {}
         self.tool_output_buffer.clear();
         self.chat_stream_handle = None;
 
+        // Refresh messages from chat session to ensure consistency
         self.messages = self.chat_session.get_messages().await;
 
         self.set_status_message("Ready.".to_string(), Color::Green);
@@ -643,6 +725,8 @@ Error: {}
 }
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+    // 既存のraw modeを無効にしてから再度有効にする
+    disable_raw_mode()?;
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;

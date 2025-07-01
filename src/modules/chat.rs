@@ -85,8 +85,6 @@ impl ChatSession {
         agent_locked.messages.clone()
     }
 
-        
-
     pub async fn clear_history(&mut self) {
         let mut agent_locked = self.agent.lock().await;
         agent_locked.clear_history();

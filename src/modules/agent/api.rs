@@ -94,6 +94,7 @@ impl std::error::Error for ApiError {}
 #[async_trait]
 pub trait AIApiTrait: Send + Sync {
     fn set_model(&mut self, model_name: String);
+    fn get_model(&self) -> String;
     async fn list_models(&self) -> Result<serde_json::Value, ApiError>;
     async fn get_chat_completion_stream(
         &self,
@@ -141,6 +142,10 @@ impl AIApi {
 
     pub fn set_model(&mut self, model_name: String) {
         self.inner.set_model(model_name);
+    }
+
+    pub fn get_model(&self) -> String {
+        self.inner.get_model()
     }
 
     pub async fn list_models(&self) -> Result<serde_json::Value, ApiError> {

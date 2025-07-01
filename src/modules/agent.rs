@@ -191,6 +191,24 @@ impl AIAgent {
         };
         agent.add_message_to_history(system_message);
 
+        // Add introductory messages
+        agent.add_message_to_history(ChatMessage {
+            role: ChatRole::System,
+            content: format!("Default Model: {}", agent.api.get_model()),
+        });
+        agent.add_message_to_history(ChatMessage {
+            role: ChatRole::System,
+            content: "AI Integration Chat Session".to_string(),
+        });
+        agent.add_message_to_history(ChatMessage {
+            role: ChatRole::System,
+            content: "Type '/help' for commands. Press '!' for shell mode.".to_string(),
+        });
+        agent.add_message_to_history(ChatMessage {
+            role: ChatRole::System,
+            content: "While AI is replying: Ctrl+C to cancel, Esc to quit.".to_string(),
+        });
+
         agent
     }
 
