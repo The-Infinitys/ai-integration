@@ -1,6 +1,6 @@
 use crate::modules::agent::api::{AIProvider, ChatMessage, ChatRole};
 use crate::modules::chat::ChatSession;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use colored::*;
 use futures_util::stream::StreamExt;
 use rustyline::error::ReadlineError;
@@ -10,6 +10,35 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::{SyntaxSet};
 use syntect::util::{LinesWithEndings, as_24_bit_terminal_escaped};
+use tokio::fs;
+
+async fn process_input(input: &str) -> Result<String> {
+    if input.starts_with('@') {
+        let file_path = input.trim_start_matches('@').trim();
+        match fs::read_to_string(file_path).await {
+            Ok(content) => {
+                println!("Reading content from file: {}", file_path.cyan());
+                Ok(format!("Content of {}:\n```\n{}\n```", file_path, content))
+            }
+            Err(e) => Err(anyhow!("Failed to read file {}: {}", file_path, e)),
+        }
+    } else if input.starts_with("http://") || input.starts_with("https://") {
+        println!("Fetching content from URL: {}", input.cyan());
+        match reqwest::get(input).await {
+            Ok(response) => match response.text().await {
+                Ok(content) => Ok(format!("Content of {}:\n```\n{}\n```", input, content)),
+                Err(e) => Err(anyhow!("Failed to read URL content {}: {}", input, e)),
+            },
+            Err(e) => Err(anyhow!("Failed to fetch URL {}: {}", input, e)),
+        }
+    } else if input.starts_with('!') {
+        let shell_command = input.trim_start_matches('!').trim();
+        println!("Entering shell mode. Executing: {}", shell_command.green());
+        Ok(format!("/shell {}", shell_command))
+    } else {
+        Ok(input.to_string())
+    }
+}
 
 pub async fn run_cli(provider: AIProvider, base_url: String, default_model: String) -> Result<()> {
     let mut chat_session = ChatSession::new(provider, base_url, default_model.clone());
@@ -59,10 +88,21 @@ pub async fn run_cli(provider: AIProvider, base_url: String, default_model: Stri
             continue;
         }
 
-        if input.starts_with('/') {
-            handle_command(&mut chat_session, &input).await?;
+        // Process the input for special commands
+        let processed_input = process_input(&input).await;
+
+        let input_to_send = match processed_input {
+            Ok(content) => content,
+            Err(e) => {
+                eprintln!("Error processing input: {}", e.to_string().red());
+                continue; // Skip sending to AI if there was an error processing input
+            }
+        };
+
+        if input_to_send.starts_with('/') { // Now check the processed input for commands
+            handle_command(&mut chat_session, &input_to_send).await?;
         } else {
-            chat_session.add_user_message(input.clone()).await;
+            chat_session.add_user_message(input_to_send.clone()).await;
             let mut stream = chat_session.start_realtime_chat().await?;
 
             let mut full_ai_response = String::new();
