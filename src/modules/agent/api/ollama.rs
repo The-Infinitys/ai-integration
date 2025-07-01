@@ -1,51 +1,23 @@
 // src/modules/agent/api/ollama.rs
 use bytes::Bytes;
-use colored::*;
 use futures_util::StreamExt;
-use futures_util::stream::{Stream, TryStreamExt};
-use reqwest::{Client, Error as ReqwestError};
+use futures_util::stream::{Stream};
+use futures_util::TryStreamExt;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Error as SerdeJsonError;
 use std::boxed::Box;
-use std::fmt;
 use std::pin::Pin;
+
+use async_trait::async_trait;
+
+use crate::modules::agent::api::{ChatMessage, ApiError, AIApiTrait};
 
 #[derive(Serialize, Default)]
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
-    pub stream: bool, // default_true関数は削除されました
+    pub stream: bool,
     pub options: Option<serde_json::Value>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ChatRole {
-    User,
-    System,
-    #[default]
-    Assistant,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct ChatMessage {
-    pub role: ChatRole,
-    pub content: String,
-}
-impl fmt::Display for ChatMessage {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", "Role".green().bold(), self.role)?;
-        write!(f, "{}: |\n  {}", "Content".cyan().bold(), self.content)
-    }
-}
-impl fmt::Display for ChatRole {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::User => write!(f, "{}", "You".yellow()),
-            Self::Assistant => write!(f, "{}", "AI".green()),
-            Self::System => write!(f, "{}", "System".cyan()),
-        }
-    }
 }
 
 #[derive(Deserialize, Default)]
@@ -57,50 +29,6 @@ pub struct ChatCompletionResponse {
     pub done: bool,
     pub total_duration: Option<u64>,
 }
-
-#[derive(Debug)]
-pub enum OllamaApiError {
-    Reqwest(ReqwestError),
-    SerdeJson(SerdeJsonError),
-    ApiError(String),
-    StreamError(String),
-    IoError(std::io::Error),
-    #[allow(dead_code)]
-    NoMessageFound,
-}
-
-impl From<ReqwestError> for OllamaApiError {
-    fn from(err: ReqwestError) -> Self {
-        OllamaApiError::Reqwest(err)
-    }
-}
-
-impl From<SerdeJsonError> for OllamaApiError {
-    fn from(err: serde_json::Error) -> Self {
-        OllamaApiError::SerdeJson(err)
-    }
-}
-
-impl From<std::io::Error> for OllamaApiError {
-    fn from(err: std::io::Error) -> Self {
-        OllamaApiError::IoError(err)
-    }
-}
-
-impl std::fmt::Display for OllamaApiError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OllamaApiError::Reqwest(e) => write!(f, "Reqwest error: {}", e),
-            OllamaApiError::SerdeJson(e) => write!(f, "JSON parsing error: {}", e),
-            OllamaApiError::ApiError(msg) => write!(f, "API error: {}", msg),
-            OllamaApiError::IoError(e) => write!(f, "IO error: {}", e),
-            OllamaApiError::StreamError(msg) => write!(f, "Stream error: {}", msg),
-            OllamaApiError::NoMessageFound => write!(f, "No message content found in API response"),
-        }
-    }
-}
-
-impl std::error::Error for OllamaApiError {}
 
 #[derive(Debug, Clone)]
 pub struct OllamaApi {
@@ -118,29 +46,30 @@ impl OllamaApi {
             default_model,
         }
     }
+}
 
-    pub fn set_model(&mut self, model_name: String) {
+#[async_trait]
+impl AIApiTrait for OllamaApi {
+    fn set_model(&mut self, model_name: String) {
         self.default_model = model_name;
     }
 
-    pub async fn list_models(&self) -> Result<serde_json::Value, OllamaApiError> {
+    async fn list_models(&self) -> Result<serde_json::Value, ApiError> {
         let url = format!("{}/api/tags", self.base_url);
         let response = self.client.get(&url).send().await?.json().await?;
         Ok(response)
     }
 
-    pub async fn get_chat_completion_stream(
+    async fn get_chat_completion_stream(
         &self,
         messages: Vec<ChatMessage>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, OllamaApiError>> + Send>>, OllamaApiError>
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, ApiError>> + Send>>, ApiError>
     {
         let request_body = ChatCompletionRequest {
             model: self.default_model.clone(),
             messages,
             stream: true,
-            options: Some(serde_json::json!({
-                "temperature": 0.7,
-            })),
+            options: Some(serde_json::json!({ "temperature": 0.7, })),
         };
 
         let url = format!("{}/api/chat", self.base_url);
@@ -152,7 +81,7 @@ impl OllamaApi {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown API error".to_string());
-            return Err(OllamaApiError::ApiError(format!(
+            return Err(ApiError::ApiError(format!(
                 "APIリクエストが失敗しました: ステータス {} - {}",
                 status, error_text
             )));
@@ -161,13 +90,12 @@ impl OllamaApi {
         let body_stream = response.bytes_stream();
 
         let stream = body_stream
-            .map_err(OllamaApiError::Reqwest)
+            .map_err(ApiError::Reqwest)
             .and_then(|bytes: Bytes| async move {
                 let s = String::from_utf8(bytes.to_vec()).map_err(|e| {
-                    OllamaApiError::StreamError(format!("Invalid UTF-8 sequence: {}", e))
+                    ApiError::StreamError(format!("Invalid UTF-8 sequence: {}", e))
                 })?;
 
-                // Ollamaのストリームには "data: " プレフィックスが付与される場合があります
                 let trimmed_s = s.trim();
                 let json_str = trimmed_s.strip_prefix("data: ").unwrap_or(trimmed_s);
 
@@ -188,5 +116,9 @@ impl OllamaApi {
             .boxed();
 
         Ok(stream)
+    }
+
+    fn clone_box(&self) -> Box<dyn AIApiTrait> {
+        Box::new(self.clone())
     }
 }

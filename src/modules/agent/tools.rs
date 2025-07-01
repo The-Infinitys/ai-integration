@@ -6,10 +6,9 @@ pub mod utils;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::io::Error as IoError;
-// Removed: use serde_json::Error as SerdeJsonError; // Unused import
 
-// Import OllamaApiError so we can use it in ToolError
-use crate::modules::agent::api::OllamaApiError; 
+// Import ApiError so we can use it in ToolError
+use crate::modules::agent::api::ApiError;
 
 // Tool のエラー型
 #[derive(Debug)]
@@ -21,7 +20,7 @@ pub enum ToolError {
     #[allow(dead_code)]
     DeserializationError(String),
     Io(IoError),
-    OllamaApi(OllamaApiError),
+    Api(ApiError),
 }
 
 // Implement Display for better error messages when printed
@@ -34,7 +33,7 @@ impl std::fmt::Display for ToolError {
             ToolError::SerializationError(msg) => write!(f, "Tool serialization error: {}", msg),
             ToolError::DeserializationError(msg) => write!(f, "Tool deserialization error: {}", msg),
             ToolError::Io(e) => write!(f, "Tool IO error: {}", e),
-            ToolError::OllamaApi(e) => write!(f, "Ollama API error in tool context: {}", e),
+            ToolError::Api(e) => write!(f, "API error in tool context: {}", e),
         }
     }
 }
@@ -55,9 +54,9 @@ impl From<IoError> for ToolError {
     }
 }
 
-impl From<OllamaApiError> for ToolError {
-    fn from(err: OllamaApiError) -> Self {
-        ToolError::OllamaApi(err)
+impl From<ApiError> for ToolError {
+    fn from(err: ApiError) -> Self {
+        ToolError::Api(err)
     }
 }
 

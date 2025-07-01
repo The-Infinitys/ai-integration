@@ -1,7 +1,7 @@
 pub mod tui;
 pub mod cli;
 
-use crate::modules::agent::api::{ChatMessage, ChatRole};
+use crate::modules::agent::api::{ChatMessage, ChatRole, AIProvider};
 use crate::modules::agent::{AIAgent, AgentEvent};
 use anyhow::Result;
 use futures_util::{stream::BoxStream, TryStreamExt};
@@ -20,7 +20,7 @@ pub struct ChatSession {
 impl ChatSession {
     /// 新しいチャットセッションを作成します。
     pub fn new(base_url: String, default_model: String) -> Self {
-        let agent = Arc::new(Mutex::new(AIAgent::new(base_url, default_model.clone())));
+        let agent = Arc::new(Mutex::new(AIAgent::new(AIProvider::Ollama, base_url, default_model.clone())));
         ChatSession {
             agent,
             session_messages: vec![],

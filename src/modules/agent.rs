@@ -2,9 +2,8 @@
 pub mod api;
 pub mod tools;
 
-use crate::modules::agent::api::{ChatMessage, ChatRole};
+use crate::modules::agent::api::{ChatMessage, ChatRole, ApiError, AIApi, AIProvider};
 use anyhow::Result;
-use api::{AIApi, OllamaApiError};
 use futures_util::stream::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -66,7 +65,7 @@ pub enum AgentEvent {
 
 /// AIの応答からツール呼び出しを抽出・パースするヘルパー関数
 /// `---` または ` ``` の開始/終了マーカー、および ` ```tool_call:` や ` ```yaml` のような言語指定に対応。
-fn extract_tool_call_from_response(response_content: &str) -> Option<AiToolCall> {
+fn extract_tool_call_from_response(response_content: &str) -> Option<(AiToolCall, String)> {
     let lines: Vec<&str> = response_content.lines().collect();
     let mut i = 0;
 
@@ -116,7 +115,11 @@ fn extract_tool_call_from_response(response_content: &str) -> Option<AiToolCall>
                             tool_call: AiToolCall,
                         }
                         match serde_yaml::from_str::<OuterToolCall>(&block_content) {
-                            Ok(outer_call) => return Some(outer_call.tool_call),
+                            Ok(outer_call) => {
+                                // ツール呼び出しブロックより前の内容を抽出
+                                let pre_tool_content = lines[0..i].join("\n");
+                                return Some((outer_call.tool_call, pre_tool_content));
+                            },
                             Err(_) => {
                                 // パースエラーが発生した場合、このブロックはツール呼び出しとして認識しない
                                 // そのため、Noneを返して他のブロックを試すか、通常のテキストとして扱う
@@ -150,8 +153,8 @@ pub struct AIAgent {
 
 impl AIAgent {
     /// 新しいAIAgentインスタンスを作成
-    pub fn new(base_url: String, default_model: String) -> Self {
-        let api = AIApi::new(base_url, default_model);
+    pub fn new(provider: AIProvider, base_url: String, default_model: String) -> Self {
+        let api = AIApi::new(provider, base_url, default_model);
         let mut tool_manager = ToolManager::new();
 
         // 利用可能なツールを登録
@@ -174,7 +177,7 @@ impl AIAgent {
             messages: vec![],
             tool_manager,
             default_prompt_template,
-            log_file_path, // 初期化したパスを設定
+            log_file_path,
         };
 
         // システムプロンプトを初期化時に追加
@@ -246,7 +249,7 @@ impl AIAgent {
     }
 
     /// 利用可能なモデルをリストアップ
-    pub async fn list_available_models(&self) -> Result<serde_json::Value, OllamaApiError> {
+    pub async fn list_available_models(&self) -> Result<serde_json::Value, ApiError> {
         self.api.list_models().await
     }
 
@@ -256,8 +259,8 @@ impl AIAgent {
         self_arc_mutex: Arc<Mutex<Self>>,
         initial_messages: Vec<ChatMessage>, // 初期メッセージ (変更可能)
     ) -> Result<
-        Pin<Box<dyn Stream<Item = Result<AgentEvent, OllamaApiError>> + Send>>,
-        OllamaApiError,
+        Pin<Box<dyn Stream<Item = Result<AgentEvent, ApiError>> + Send>>,
+        ApiError,
     > {
         let agent_stream = async_stream::stream! {
             // ループ内で使用するメッセージリストのクローン
@@ -265,29 +268,29 @@ impl AIAgent {
 
             loop {
                 // --- 1. 最新の状態を取得し、API呼び出しの準備をする ---
-                let api_clone = {
+                let api_clone = { // AIApiはCloneを実装しているので、ロックを保持せずにクローンできる
                     let agent_locked = self_arc_mutex.lock().await;
-                    agent_locked.api.clone() // AIApiのクローン
+                    agent_locked.api.clone()
                 };
 
-                
-
-                // --- 3. AI応答ストリームを取得 ---
+                // --- 2. AI応答ストリームを取得 ---
                 let mut ai_response_stream = api_clone
                     .get_chat_completion_stream(_loop_messages.clone())
                     .await?;
 
-                // --- 4. AIからのストリームを処理し、ツール呼び出しが検出されたら中断 ---
+                // --- 3. AIからのストリームを処理し、ツール呼び出しが検出されたら中断 ---
                 let mut full_ai_response_content = String::new();
                 let mut call_tool_option: Option<AiToolCall> = None;
+                let mut pre_tool_content: String = String::new();
 
                 'stream_loop: while let Some(chunk_result) = ai_response_stream.next().await {
                     match chunk_result {
                         Ok(chunk) => {
                             full_ai_response_content.push_str(&chunk);
                             // 蓄積されたコンテンツからツール呼び出しのパースを試みる
-                            if let Some(call_tool) = extract_tool_call_from_response(&full_ai_response_content) {
+                            if let Some((call_tool, pre_content)) = extract_tool_call_from_response(&full_ai_response_content) {
                                 call_tool_option = Some(call_tool);
+                                pre_tool_content = pre_content;
                                 // ツール呼び出しが検出されたら、AIのストリームの受信を停止
                                 break 'stream_loop;
                             } else {
@@ -302,28 +305,25 @@ impl AIAgent {
                     }
                 }
 
-                // --- 5. AIの完全な応答を履歴に追加 ---
-                // AIのターンが完了した後に一度だけ行われる
-                {
+                // --- 4. AIの完全な応答を履歴に追加 ---
+                // ツール呼び出しがあった場合、ツール呼び出しより前の内容をAssistantメッセージとして追加
+                if call_tool_option.is_some() && !pre_tool_content.is_empty() {
                     let mut agent_locked = self_arc_mutex.lock().await;
                     let assistant_message = ChatMessage {
                         role: ChatRole::Assistant,
-                        content: full_ai_response_content.clone(),
+                        content: pre_tool_content.clone(),
                     };
-                    // Assistantメッセージをエージェントの履歴に追加し、ログにも書き込む
-                    // TUI側でも flush_ai_buffer_to_messages で追加されるが、
-                    // ツールが呼ばれなかった場合にここで確定させるために必要。
                     agent_locked.add_message_to_history(assistant_message.clone());
                 }
 
-                // --- 6. ツール呼び出しが検出された場合、それを実行 ---
+                // --- 5. ツール呼び出しが検出された場合、それを実行 ---
                 if let Some(call_tool) = call_tool_option {
                     // ツール呼び出しイベントをUIに送信
                     yield Ok(AgentEvent::ToolCallDetected(call_tool.clone()));
                     yield Ok(AgentEvent::ToolExecuting(call_tool.tool_name.clone())); // ツール実行中イベント
 
                     // ツールを実行
-                    let tool_result_outcome = {
+                    let tool_result_outcome = { // ロックのスコープを限定
                         let agent_locked = self_arc_mutex.lock().await;
                         agent_locked.tool_manager.execute_tool(
                             &call_tool.tool_name,
@@ -341,7 +341,7 @@ impl AIAgent {
 
                             let mut agent_locked = self_arc_mutex.lock().await;
                             let tool_output_message = ChatMessage {
-                                role: ChatRole::System, // ツールの結果はシステムロールとして扱う
+                                role: ChatRole::Tool, // ツールの結果はToolロールとして扱う
                                 content: format!("---\n{}\n---", tool_output_message_content),
                             };
                             // ツール結果をエージェントの履歴に追加し、ログにも書き込む
@@ -356,7 +356,7 @@ impl AIAgent {
 
                             let mut agent_locked = self_arc_mutex.lock().await;
                             let tool_error_message = ChatMessage {
-                                role: ChatRole::System, // ツールのエラーもシステムロールとして扱う
+                                role: ChatRole::Tool, // ツールのエラーもToolロールとして扱う
                                 content: format!("---\n{}\n---", error_message_content),
                             };
                             // ツールエラーをエージェントの履歴に追加し、ログにも書き込む
@@ -365,7 +365,7 @@ impl AIAgent {
                     }
 
                     // ループの次のイテレーションのためにメッセージ履歴を更新
-                    {
+                    { // ロックのスコープを限定
                         let agent_locked = self_arc_mutex.lock().await;
                         _loop_messages = agent_locked.messages.clone();
                     }

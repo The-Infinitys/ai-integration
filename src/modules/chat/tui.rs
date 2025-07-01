@@ -179,6 +179,7 @@ impl TuiApp {
                 ChatRole::User => ("You: ", Color::Yellow),
                 ChatRole::Assistant => ("AI: ", Color::Green),
                 ChatRole::System => ("System: ", Color::Cyan),
+                ChatRole::Tool => ("Tool: ", Color::Blue),
             };
             list_items.extend(self.create_list_items(
                 &message.content,
