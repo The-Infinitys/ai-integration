@@ -147,7 +147,7 @@ async fn main() -> Result<()> {
     }));
 
     let args: Vec<String> = std::env::args().collect();
-    let use_cli = args.contains(&"--cli".to_string());
+    let use_cli = !args.contains(&"--tui".to_string());
 
     let provider_arg = args.iter().find(|arg| arg.starts_with("--provider="));
     let provider = if let Some(arg) = provider_arg {
