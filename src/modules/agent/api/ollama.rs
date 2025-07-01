@@ -1,8 +1,8 @@
 // src/modules/agent/api/ollama.rs
 use bytes::Bytes;
 use futures_util::StreamExt;
-use futures_util::stream::{Stream};
 use futures_util::TryStreamExt;
+use futures_util::stream::Stream;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::boxed::Box;
@@ -10,7 +10,7 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 
-use crate::modules::agent::api::{ChatMessage, ApiError, AIApiTrait};
+use crate::modules::agent::api::{AIApiTrait, ApiError, ChatMessage};
 
 #[derive(Serialize, Default)]
 pub struct ChatCompletionRequest {
@@ -63,8 +63,7 @@ impl AIApiTrait for OllamaApi {
     async fn get_chat_completion_stream(
         &self,
         messages: Vec<ChatMessage>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, ApiError>> + Send>>, ApiError>
-    {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, ApiError>> + Send>>, ApiError> {
         let request_body = ChatCompletionRequest {
             model: self.default_model.clone(),
             messages,
@@ -92,9 +91,8 @@ impl AIApiTrait for OllamaApi {
         let stream = body_stream
             .map_err(ApiError::Reqwest)
             .and_then(|bytes: Bytes| async move {
-                let s = String::from_utf8(bytes.to_vec()).map_err(|e| {
-                    ApiError::StreamError(format!("Invalid UTF-8 sequence: {}", e))
-                })?;
+                let s = String::from_utf8(bytes.to_vec())
+                    .map_err(|e| ApiError::StreamError(format!("Invalid UTF-8 sequence: {}", e)))?;
 
                 let trimmed_s = s.trim();
                 let json_str = trimmed_s.strip_prefix("data: ").unwrap_or(trimmed_s);

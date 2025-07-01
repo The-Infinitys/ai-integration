@@ -1,5 +1,5 @@
 use crate::modules::agent::AgentEvent;
-use crate::modules::agent::api::{ChatMessage, ChatRole};
+use crate::modules::agent::api::{AIProvider, ChatMessage, ChatRole};
 use crate::modules::chat::ChatSession;
 use anyhow::Result;
 use crossterm::{
@@ -51,8 +51,8 @@ pub struct TuiApp {
 }
 
 impl TuiApp {
-    pub fn new(ollama_base_url: String, default_ollama_model: String) -> Self {
-        let chat_session = ChatSession::new(ollama_base_url, default_ollama_model.clone());
+    pub fn new(provider: AIProvider, base_url: String, default_model: String) -> Self {
+        let chat_session = ChatSession::new(provider, base_url, default_model.clone());
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
         Self {
             chat_session,
@@ -60,7 +60,7 @@ impl TuiApp {
             messages: vec![
                 ChatMessage {
                     role: ChatRole::System,
-                    content: format!("Default Ollama Model: {}", default_ollama_model),
+                    content: format!("Default Model: {}", default_model),
                 },
                 ChatMessage {
                     role: ChatRole::System,

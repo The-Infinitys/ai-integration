@@ -1,7 +1,7 @@
 // src/modules/agent/tools/files/write.rs
 use crate::modules::agent::tools::{Tool, ToolError};
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fs::File;
 use std::io::{LineWriter, Write};
 use std::path::Path;
@@ -50,26 +50,37 @@ impl Tool for WriteTool {
     }
 
     async fn execute(&self, args: Value) -> Result<Value, ToolError> {
-        let path_str = args["path"].as_str().ok_or_else(|| ToolError::ExecutionError("Missing 'path' argument.".to_string()))?;
+        let path_str = args["path"]
+            .as_str()
+            .ok_or_else(|| ToolError::ExecutionError("Missing 'path' argument.".to_string()))?;
         let path = Path::new(path_str);
 
-        let file = File::create(path).map_err(|e| ToolError::ExecutionError(format!("Failed to create or open file: {}", e)))?;
+        let file = File::create(path).map_err(|e| {
+            ToolError::ExecutionError(format!("Failed to create or open file: {}", e))
+        })?;
         let mut writer = LineWriter::new(file);
 
         match &args["content"] {
             Value::String(content) => {
-                writer.write_all(content.as_bytes()).map_err(|e| ToolError::ExecutionError(format!("Failed to write to file: {}", e)))?;
+                writer.write_all(content.as_bytes()).map_err(|e| {
+                    ToolError::ExecutionError(format!("Failed to write to file: {}", e))
+                })?;
             }
             Value::Array(lines_to_write) => {
                 // This implementation is simplified. A more robust version would handle line-specific writes.
                 // For now, we'll just write the lines sequentially.
                 for item in lines_to_write {
                     if let Some(content) = item["content"].as_str() {
-                        writeln!(writer, "{}", content).map_err(|e| ToolError::ExecutionError(format!("Failed to write line: {}", e)))?;
+                        writeln!(writer, "{}", content).map_err(|e| {
+                            ToolError::ExecutionError(format!("Failed to write line: {}", e))
+                        })?;
                     }
                 }
             }
-            _ => return Err(ToolError::ExecutionError("Invalid 'content' format. Must be a string or an array of line-content objects.".to_string())),
+            _ => return Err(ToolError::ExecutionError(
+                "Invalid 'content' format. Must be a string or an array of line-content objects."
+                    .to_string(),
+            )),
         }
 
         Ok(json!({

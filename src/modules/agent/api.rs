@@ -1,14 +1,14 @@
 // src/modules/agent/api.rs
-pub mod ollama;
 pub mod gemini;
+pub mod ollama;
 
 use async_trait::async_trait;
-use futures_util::stream::Stream;
-use std::pin::Pin;
-use std::boxed::Box;
-use serde::{Deserialize, Serialize};
-use std::fmt;
 use colored::*;
+use futures_util::stream::Stream;
+use serde::{Deserialize, Serialize};
+use std::boxed::Box;
+use std::fmt;
+use std::pin::Pin;
 
 // Common ChatMessage and ChatRole definitions
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
@@ -82,7 +82,7 @@ impl std::fmt::Display for ApiError {
             ApiError::ApiError(msg) => write!(f, "API error: {}", msg),
             ApiError::IoError(e) => write!(f, "IO error: {}", e),
             ApiError::StreamError(msg) => write!(f, "Stream error: {}", msg),
-            
+
             ApiError::UnsupportedOperation(msg) => write!(f, "Unsupported operation: {}", msg),
         }
     }
@@ -90,13 +90,15 @@ impl std::fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
-
 /// Trait for AI API implementations (Ollama, Gemini, etc.)
 #[async_trait]
 pub trait AIApiTrait: Send + Sync {
     fn set_model(&mut self, model_name: String);
     async fn list_models(&self) -> Result<serde_json::Value, ApiError>;
-    async fn get_chat_completion_stream(&self, messages: Vec<ChatMessage>) -> Result<Pin<Box<dyn Stream<Item = Result<String, ApiError>> + Send>>, ApiError>;
+    async fn get_chat_completion_stream(
+        &self,
+        messages: Vec<ChatMessage>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, ApiError>> + Send>>, ApiError>;
     fn clone_box(&self) -> Box<dyn AIApiTrait>;
 }
 
@@ -113,7 +115,9 @@ pub struct AIApi {
 
 impl Clone for AIApi {
     fn clone(&self) -> Self {
-        AIApi { inner: self.inner.clone_box() }
+        AIApi {
+            inner: self.inner.clone_box(),
+        }
     }
 }
 
@@ -122,12 +126,16 @@ impl AIApi {
         match provider {
             AIProvider::Ollama => {
                 let ollama_api = ollama::OllamaApi::new(base_url, default_model);
-                AIApi { inner: Box::new(ollama_api) }
-            },
+                AIApi {
+                    inner: Box::new(ollama_api),
+                }
+            }
             AIProvider::Gemini => {
                 let gemini_api = gemini::GeminiApi::new(base_url, default_model);
-                AIApi { inner: Box::new(gemini_api) }
-            },
+                AIApi {
+                    inner: Box::new(gemini_api),
+                }
+            }
         }
     }
 
@@ -139,7 +147,10 @@ impl AIApi {
         self.inner.list_models().await
     }
 
-    pub async fn get_chat_completion_stream(&self, messages: Vec<ChatMessage>) -> Result<Pin<Box<dyn Stream<Item = Result<String, ApiError>> + Send>>, ApiError> {
+    pub async fn get_chat_completion_stream(
+        &self,
+        messages: Vec<ChatMessage>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, ApiError>> + Send>>, ApiError> {
         self.inner.get_chat_completion_stream(messages).await
     }
 }

@@ -1,4 +1,5 @@
 use crate::modules::agent::AgentEvent;
+use crate::modules::agent::api::AIProvider;
 use crate::modules::chat::ChatSession; // 親モジュールからChatSessionをインポート
 use anyhow::Result;
 use colored::*;
@@ -12,8 +13,8 @@ pub struct App {
 
 impl App {
     /// Creates a new App instance.
-    pub fn new(ollama_base_url: String, default_ollama_model: String) -> Self {
-        let chat_session = ChatSession::new(ollama_base_url, default_ollama_model);
+    pub fn new(provider: AIProvider, base_url: String, default_model: String) -> Self {
+        let chat_session = ChatSession::new(provider, base_url, default_model);
         App { chat_session }
     }
 
@@ -135,11 +136,7 @@ impl App {
                                 "\n{}",
                                 "--- ツール呼び出しを検出しました ---".yellow().bold()
                             );
-                            println!(
-                                "{}: {}",
-                                "ツール名".yellow(),
-                                tool_call.tool_name.yellow()
-                            );
+                            println!("{}: {}", "ツール名".yellow(), tool_call.tool_name.yellow());
                             println!(
                                 "{}: {}",
                                 "パラメータ".yellow(),

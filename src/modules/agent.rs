@@ -2,7 +2,7 @@
 pub mod api;
 pub mod tools;
 
-use crate::modules::agent::api::{ChatMessage, ChatRole, ApiError, AIApi, AIProvider};
+use crate::modules::agent::api::{AIApi, AIProvider, ApiError, ChatMessage, ChatRole};
 use anyhow::Result;
 use futures_util::stream::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -16,12 +16,11 @@ use tokio::sync::Mutex;
 use tools::ToolManager;
 
 // ログファイル保存のために追加
+use chrono::Local;
+use dirs::home_dir;
 use std::fs::OpenOptions;
 use std::io::Write;
-use chrono::Local;
-use std::path::PathBuf;
-use dirs::home_dir; // `dirs` クレートが必要です。Cargo.tomlに`dirs = "5.0"`を追加してください。
-
+use std::path::PathBuf; // `dirs` クレートが必要です。Cargo.tomlに`dirs = "5.0"`を追加してください。
 
 /// AIがツール呼び出しを記述するYAMLの構造体
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -110,16 +109,12 @@ fn extract_tool_call_from_response(response_content: &str) -> Option<(AiToolCall
                 if inner_trimmed_line == "---" || inner_trimmed_line == "```" {
                     // `tool_call:` キーが含まれているか確認
                     if block_content.contains("tool_call:") {
-                        #[derive(Debug, Deserialize)]
-                        struct OuterToolCall {
-                            tool_call: AiToolCall,
-                        }
-                        match serde_yaml::from_str::<OuterToolCall>(&block_content) {
-                            Ok(outer_call) => {
+                        match serde_yaml::from_str::<AiToolCall>(&block_content) {
+                            Ok(call) => {
                                 // ツール呼び出しブロックより前の内容を抽出
                                 let pre_tool_content = lines[0..i].join("\n");
-                                return Some((outer_call.tool_call, pre_tool_content));
-                            },
+                                return Some((call, pre_tool_content));
+                            }
                             Err(_) => {
                                 // パースエラーが発生した場合、このブロックはツール呼び出しとして認識しない
                                 // そのため、Noneを返して他のブロックを試すか、通常のテキストとして扱う
@@ -144,11 +139,11 @@ fn extract_tool_call_from_response(response_content: &str) -> Option<(AiToolCall
 
 /// AIエージェントのメイン構造体
 pub struct AIAgent {
-    api: AIApi, // Ollama APIクライアント (プライベート)
-    pub messages: Vec<ChatMessage>, // チャット履歴
-    pub tool_manager: ToolManager, // ツール管理
+    api: AIApi,                      // Ollama APIクライアント (プライベート)
+    pub messages: Vec<ChatMessage>,  // チャット履歴
+    pub tool_manager: ToolManager,   // ツール管理
     default_prompt_template: String, // デフォルトのシステムプロンプトテンプレート
-    log_file_path: Option<PathBuf>, // ログファイルのパス
+    log_file_path: Option<PathBuf>,  // ログファイルのパス
 }
 
 impl AIAgent {
@@ -181,9 +176,11 @@ impl AIAgent {
         };
 
         // システムプロンプトを初期化時に追加
-        let tool_manager_schemas = agent.tool_manager.get_tool_json_schemas();
-        let formatted_prompt = agent.default_prompt_template
-            .replace("{{TOOLS_JSON_SCHEMA}}", &tool_manager_schemas.to_string());
+        let tool_manager_schemas = agent.tool_manager.get_tool_yaml_schemas();
+        let formatted_prompt = agent.default_prompt_template.replace(
+            "{{TOOLS_YAML_SCHEMA}}",
+            &serde_yaml::to_string(&tool_manager_schemas).unwrap_or_default(),
+        );
 
         let system_message = ChatMessage {
             role: ChatRole::System,
@@ -258,10 +255,7 @@ impl AIAgent {
     pub async fn chat_with_tools_realtime(
         self_arc_mutex: Arc<Mutex<Self>>,
         initial_messages: Vec<ChatMessage>, // 初期メッセージ (変更可能)
-    ) -> Result<
-        Pin<Box<dyn Stream<Item = Result<AgentEvent, ApiError>> + Send>>,
-        ApiError,
-    > {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<AgentEvent, ApiError>> + Send>>, ApiError> {
         let agent_stream = async_stream::stream! {
             // ループ内で使用するメッセージリストのクローン
             let mut _loop_messages = initial_messages.clone();
@@ -335,9 +329,12 @@ impl AIAgent {
                     match tool_result_outcome {
                         Ok(tool_result) => {
                             yield Ok(AgentEvent::ToolResult(call_tool.tool_name.clone(), tool_result.clone())); // ツール結果をUIに送信
-                            let tool_output_message_content = serde_yaml::to_string(&serde_json::json!({
-                                "tool_result": { "tool_name": call_tool.tool_name, "result": tool_result }
-                            })).unwrap_or_else(|_| "Failed to serialize tool result.".to_string());
+                            let tool_output_message_content = serde_yaml::to_string(
+                                &serde_yaml::to_value(serde_json::json!({
+                                    "tool_result": { "tool_name": call_tool.tool_name, "result": tool_result }
+                                }))
+                                .unwrap_or_else(|_| serde_yaml::Value::Null)
+                            ).unwrap_or_else(|_| "Failed to serialize tool result.".to_string());
 
                             let mut agent_locked = self_arc_mutex.lock().await;
                             let tool_output_message = ChatMessage {
@@ -350,9 +347,12 @@ impl AIAgent {
                         Err(e) => {
                             let error_message = format!("{:?}", e);
                             yield Ok(AgentEvent::ToolError(call_tool.tool_name.clone(), error_message.clone())); // ツールエラーをUIに送信
-                            let error_message_content = serde_yaml::to_string(&serde_json::json!({
-                                "tool_error": { "tool_name": call_tool.tool_name, "error": error_message }
-                            })).unwrap_or_else(|_| "Failed to serialize tool error.".to_string());
+                            let error_message_content = serde_yaml::to_string(
+                                &serde_yaml::to_value(serde_json::json!({
+                                    "tool_error": { "tool_name": call_tool.tool_name, "error": error_message }
+                                }))
+                                .unwrap_or_else(|_| serde_yaml::Value::Null)
+                            ).unwrap_or_else(|_| "Failed to serialize tool error.".to_string());
 
                             let mut agent_locked = self_arc_mutex.lock().await;
                             let tool_error_message = ChatMessage {

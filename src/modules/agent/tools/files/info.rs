@@ -1,7 +1,7 @@
 // src/modules/agent/tools/files/info.rs
 use crate::modules::agent::tools::{Tool, ToolError};
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
 
@@ -31,14 +31,20 @@ impl Tool for InfoTool {
     }
 
     async fn execute(&self, args: Value) -> Result<Value, ToolError> {
-        let path_str = args["path"].as_str().ok_or_else(|| ToolError::ExecutionError("Missing 'path' argument.".to_string()))?;
+        let path_str = args["path"]
+            .as_str()
+            .ok_or_else(|| ToolError::ExecutionError("Missing 'path' argument.".to_string()))?;
         let path = Path::new(path_str);
 
         if !path.exists() {
-            return Err(ToolError::ExecutionError(format!("No such file or directory: {}", path_str)));
+            return Err(ToolError::ExecutionError(format!(
+                "No such file or directory: {}",
+                path_str
+            )));
         }
 
-        let metadata = fs::metadata(path).map_err(|e| ToolError::ExecutionError(format!("Failed to get metadata: {}", e)))?;
+        let metadata = fs::metadata(path)
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to get metadata: {}", e)))?;
 
         let file_type = if metadata.is_dir() {
             "directory"
@@ -48,8 +54,14 @@ impl Tool for InfoTool {
             "other"
         };
 
-        let created = metadata.created().map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()).ok();
-        let modified = metadata.modified().map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()).ok();
+        let created = metadata
+            .created()
+            .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs())
+            .ok();
+        let modified = metadata
+            .modified()
+            .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs())
+            .ok();
 
         Ok(json!({
             "path": path_str,

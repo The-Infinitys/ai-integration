@@ -1,10 +1,10 @@
-pub mod tui;
 pub mod cli;
+pub mod tui;
 
-use crate::modules::agent::api::{ChatMessage, ChatRole, AIProvider};
+use crate::modules::agent::api::{AIProvider, ChatMessage, ChatRole};
 use crate::modules::agent::{AIAgent, AgentEvent};
 use anyhow::Result;
-use futures_util::{stream::BoxStream, TryStreamExt};
+use futures_util::{TryStreamExt, stream::BoxStream};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -19,8 +19,12 @@ pub struct ChatSession {
 
 impl ChatSession {
     /// 新しいチャットセッションを作成します。
-    pub fn new(base_url: String, default_model: String) -> Self {
-        let agent = Arc::new(Mutex::new(AIAgent::new(AIProvider::Ollama, base_url, default_model.clone())));
+    pub fn new(provider: AIProvider, base_url: String, default_model: String) -> Self {
+        let agent = Arc::new(Mutex::new(AIAgent::new(
+            provider,
+            base_url,
+            default_model.clone(),
+        )));
         ChatSession {
             agent,
             session_messages: vec![],
@@ -48,7 +52,8 @@ impl ChatSession {
         let current_turn_messages = agent_locked.messages.clone();
         drop(agent_locked);
 
-        let stream = AIAgent::chat_with_tools_realtime(agent_arc_clone, current_turn_messages).await?;
+        let stream =
+            AIAgent::chat_with_tools_realtime(agent_arc_clone, current_turn_messages).await?;
         let stream = stream.map_err(anyhow::Error::from);
         Ok(Box::pin(stream))
     }
@@ -62,7 +67,11 @@ impl ChatSession {
         agent_locked.revert_last_user_message();
 
         // セッションメッセージの履歴を元に戻す
-        if self.session_messages.last().is_some_and(|m| m.role == ChatRole::User) {
+        if self
+            .session_messages
+            .last()
+            .is_some_and(|m| m.role == ChatRole::User)
+        {
             self.session_messages.pop();
         }
 
@@ -88,7 +97,10 @@ impl ChatSession {
     /// 利用可能なモデルのリストを取得します。
     pub async fn list_models(&self) -> Result<serde_json::Value> {
         let agent_locked = self.agent.lock().await;
-        agent_locked.list_available_models().await.map_err(anyhow::Error::from)
+        agent_locked
+            .list_available_models()
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     /// 現在のセッションメッセージのクローンを取得します。

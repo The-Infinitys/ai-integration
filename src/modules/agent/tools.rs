@@ -1,8 +1,8 @@
 // src/modules/agent/tools.rs (previously src/modules/tools.rs, assuming it was moved/renamed)
-pub mod shell;
 pub mod files;
-pub mod www;
+pub mod shell;
 pub mod utils;
+pub mod www;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::io::Error as IoError;
@@ -31,7 +31,9 @@ impl std::fmt::Display for ToolError {
             ToolError::NotFound(msg) => write!(f, "Tool not found: {}", msg),
             ToolError::ExecutionError(msg) => write!(f, "Tool execution error: {}", msg),
             ToolError::SerializationError(msg) => write!(f, "Tool serialization error: {}", msg),
-            ToolError::DeserializationError(msg) => write!(f, "Tool deserialization error: {}", msg),
+            ToolError::DeserializationError(msg) => {
+                write!(f, "Tool deserialization error: {}", msg)
+            }
             ToolError::Io(e) => write!(f, "Tool IO error: {}", e),
             ToolError::Api(e) => write!(f, "API error in tool context: {}", e),
         }
@@ -41,10 +43,9 @@ impl std::fmt::Display for ToolError {
 // Implement std::error::Error for ToolError
 impl std::error::Error for ToolError {}
 
-
 impl From<serde_json::Error> for ToolError {
     fn from(err: serde_json::Error) -> Self {
-        ToolError::SerializationError(err.to_string()) 
+        ToolError::SerializationError(err.to_string())
     }
 }
 
@@ -59,7 +60,6 @@ impl From<ApiError> for ToolError {
         ToolError::Api(err)
     }
 }
-
 
 /// AIが呼び出せる個々のツールを表すトレイト
 #[async_trait]
@@ -103,25 +103,33 @@ impl ToolManager {
         self.tools.get(name).map(|b| b.as_ref())
     }
 
-    /// ツールをJSONスキーマ形式で取得する（プロンプトに埋め込むため）
-    pub fn get_tool_json_schemas(&self) -> serde_json::Value {
-        let tool_definitions: Vec<serde_json::Value> = self.tools.values()
+    /// ツールをYAMLスキーマ形式で取得する（プロンプトに埋め込むため）
+    pub fn get_tool_yaml_schemas(&self) -> serde_yaml::Value {
+        let tool_definitions: Vec<serde_yaml::Value> = self
+            .tools
+            .values()
             .map(|tool| {
-                serde_json::json!({
+                serde_yaml::to_value(serde_json::json!({
                     "type": "function",
                     "function": {
                         "name": tool.name(),
                         "description": tool.description(),
                         "parameters": tool.parameters(),
                     }
-                })
+                }))
+                .unwrap_or_else(|_| serde_yaml::Value::Null)
             })
             .collect();
-        serde_json::to_value(tool_definitions).unwrap_or_else(|_| serde_json::json!([]))
+        serde_yaml::to_value(tool_definitions)
+            .unwrap_or_else(|_| serde_yaml::Value::Sequence(vec![]))
     }
 
     /// ツールを実行する
-    pub async fn execute_tool(&self, name: &str, args: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+    pub async fn execute_tool(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, ToolError> {
         if let Some(tool) = self.get_tool(name) {
             tool.execute(args).await
         } else {

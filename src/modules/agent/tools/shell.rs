@@ -1,7 +1,7 @@
 // src/modules/tools/shell.rs
 use super::{Tool, ToolError};
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::process::Command; // tokio::process::Command を使用
 
 pub struct ShellTool;
@@ -30,13 +30,16 @@ impl Tool for ShellTool {
     }
 
     async fn execute(&self, args: Value) -> Result<Value, ToolError> {
-        let command_line = args["command_line"].as_str()
-            .ok_or_else(|| ToolError::ExecutionError("Missing 'command_line' argument for shell tool.".to_string()))?;
+        let command_line = args["command_line"].as_str().ok_or_else(|| {
+            ToolError::ExecutionError("Missing 'command_line' argument for shell tool.".to_string())
+        })?;
 
         // コマンドライン文字列を空白で分割し、コマンド名と引数を抽出
         let parts: Vec<&str> = command_line.split_whitespace().collect();
         if parts.is_empty() {
-            return Err(ToolError::ExecutionError("Empty command line provided.".to_string()));
+            return Err(ToolError::ExecutionError(
+                "Empty command line provided.".to_string(),
+            ));
         }
 
         let command_name = parts[0];
@@ -46,7 +49,12 @@ impl Tool for ShellTool {
             .args(command_args)
             .output()
             .await
-            .map_err(|e| ToolError::ShellError(format!("Failed to execute command '{}': {}", command_line, e)))?;
+            .map_err(|e| {
+                ToolError::ShellError(format!(
+                    "Failed to execute command '{}': {}",
+                    command_line, e
+                ))
+            })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
