@@ -111,14 +111,10 @@ fn extract_tool_call_from_response(response_content: &str) -> Option<(AiToolCall
                             tool_call: AiToolCall,
                         }
 
-                        let call = if let Ok(wrapper) = serde_yaml::from_str::<ToolCallWrapper>(&block_content) {
-                            Some(wrapper.tool_call)
-                        } else if let Ok(direct_call) = serde_yaml::from_str::<AiToolCall>(&block_content) {
-                            // 次に直接 AiToolCall の形式を試す
-                            Some(direct_call)
-                        } else {
-                            None
-                        };
+                        let call = serde_yaml::from_str::<ToolCallWrapper>(&block_content)
+                            .map(|wrapper| wrapper.tool_call)
+                            .or_else(|_| serde_yaml::from_str::<AiToolCall>(&block_content))
+                            .ok();
 
                         if let Some(parsed_call) = call {
                             // パース成功

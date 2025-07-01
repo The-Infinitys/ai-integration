@@ -50,7 +50,7 @@ impl fmt::Display for ChatRole {
 pub enum ApiError {
     Reqwest(reqwest::Error),
     SerdeJson(serde_json::Error),
-    ApiError(String),
+    Message(String),
     StreamError(String),
     IoError(std::io::Error),
     UnsupportedOperation(String),
@@ -79,7 +79,7 @@ impl std::fmt::Display for ApiError {
         match self {
             ApiError::Reqwest(e) => write!(f, "Reqwest error: {}", e),
             ApiError::SerdeJson(e) => write!(f, "JSON parsing error: {}", e),
-            ApiError::ApiError(msg) => write!(f, "API error: {}", msg),
+            ApiError::Message(msg) => write!(f, "API error: {}", msg),
             ApiError::IoError(e) => write!(f, "IO error: {}", e),
             ApiError::StreamError(msg) => write!(f, "Stream error: {}", msg),
 

@@ -84,7 +84,7 @@ impl AIApiTrait for OllamaApi {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown API error".to_string());
-            return Err(ApiError::ApiError(format!(
+            return Err(ApiError::Message(format!(
                 "APIリクエストが失敗しました: ステータス {} - {}",
                 status, error_text
             )));

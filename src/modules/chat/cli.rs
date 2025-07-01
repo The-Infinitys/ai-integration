@@ -36,7 +36,7 @@ pub async fn run_cli(provider: AIProvider, base_url: String, default_model: Stri
         let readline = rl.readline("\n> ");
         let input = match readline {
             Ok(line) => {
-                rl.add_history_entry(line.as_str());
+                let _ = rl.add_history_entry(line.as_str());
                 line
             }
             Err(ReadlineError::Interrupted) => {
