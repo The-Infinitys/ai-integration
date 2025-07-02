@@ -46,6 +46,8 @@ pub async fn run_cli(provider: AIProvider, base_url: String, default_model: Stri
     let syntax_set = SyntaxSet::load_defaults_newlines();
     let theme = ThemeSet::load_defaults().themes["base16-ocean.dark"].clone();
 
+    let mut last_printed_role: Option<ChatRole> = None;
+
     // Display initial messages
     let initial_messages = chat_session.get_messages().await;
     for message in initial_messages {
@@ -53,7 +55,7 @@ pub async fn run_cli(provider: AIProvider, base_url: String, default_model: Stri
             // Skip the main system prompt
             continue;
         }
-        print_message(&message, &syntax_set, &theme);
+        print_message(&message, &syntax_set, &theme, &mut last_printed_role);
     }
 
     let mut rl = Editor::<(), _>::new()?;
@@ -113,30 +115,39 @@ pub async fn run_cli(provider: AIProvider, base_url: String, default_model: Stri
                     Ok(event) => {
                         match event {
                             crate::modules::agent::AgentEvent::AiResponseChunk(chunk) => {
+                                if last_printed_role != Some(ChatRole::Assistant) {
+                                    print!("{}", "AI: ".green().bold());
+                                }
                                 full_ai_response.push_str(&chunk);
                                 print!("{}", chunk);
                                 io::stdout().flush()?;
+                                last_printed_role = Some(ChatRole::Assistant);
                             }
                             crate::modules::agent::AgentEvent::ToolCallDetected(tool_call) => {
                                 println!("\n--- Tool Call: {} ---", tool_call.tool_name.cyan().bold());
                                 println!("{}", serde_yaml::to_string(&tool_call.parameters).unwrap_or_default().yellow());
                                 full_tool_output.push_str(&format!("\n--- Tool Call: {} ---\n{}", tool_call.tool_name, serde_yaml::to_string(&tool_call.parameters).unwrap_or_default()));
+                                last_printed_role = Some(ChatRole::Tool);
                             }
                             crate::modules::agent::AgentEvent::ToolExecuting(name) => {
                                 println!("Executing: {}...", name.green());
+                                last_printed_role = Some(ChatRole::Tool);
                             }
                             crate::modules::agent::AgentEvent::ToolResult(tool_name, result) => {
                                 println!("\n--- Tool Result ({}) ---", tool_name.cyan().bold());
                                 println!("{}", serde_yaml::to_string(&result).unwrap_or_default().yellow());
                                 full_tool_output.push_str(&format!("\n--- Tool Result ({}) ---\n{}", tool_name, serde_yaml::to_string(&result).unwrap_or_default()));
+                                last_printed_role = Some(ChatRole::Tool);
                             }
                             crate::modules::agent::AgentEvent::ToolError(tool_name, error_message) => {
                                 eprintln!("\n--- Tool Error ({}) ---", tool_name.red().bold());
                                 eprintln!("Error: {}", error_message.red());
                                 full_tool_output.push_str(&format!("\n--- Tool Error ({}) ---\nError: {}", tool_name, error_message));
+                                last_printed_role = Some(ChatRole::Tool);
                             }
                             crate::modules::agent::AgentEvent::Thinking(msg) => {
                                 println!("Thinking: {}", msg.blue());
+                                last_printed_role = Some(ChatRole::System);
                             }
                             _ => {}
                         }
@@ -224,16 +235,28 @@ async fn handle_command(chat_session: &mut ChatSession, command: &str) -> Result
     Ok(())
 }
 
-fn print_message(message: &ChatMessage, syntax_set: &SyntaxSet, theme: &Theme) {
+fn print_message(message: &ChatMessage, syntax_set: &SyntaxSet, theme: &Theme, last_printed_role: &mut Option<ChatRole>) {
     let mut in_code_block = false;
     let mut code_block_lang = "txt";
 
-    let role_prefix = match message.role {
-        ChatRole::User => "You: ".yellow().bold(),
-        ChatRole::Assistant => "AI: ".green().bold(),
-        ChatRole::System => "System: ".cyan().bold(),
-        ChatRole::Tool => "Tool: ".blue().bold(),
+    let (prefix_len, current_role_prefix) = match message.role {
+        ChatRole::User => ("You: ".len(), "You: ".yellow().bold()),
+        ChatRole::Assistant => ("AI: ".len(), "AI: ".green().bold()),
+        ChatRole::System => ("System: ".len(), "System: ".cyan().bold()),
+        ChatRole::Tool => ("Tool: ".len(), "Tool: ".blue().bold()),
     };
+
+    let prefix_to_use = if let Some(last_role) = last_printed_role {
+        if *last_role == message.role {
+            " ".repeat(prefix_len).normal()
+        } else {
+            current_role_prefix
+        }
+    } else {
+        current_role_prefix
+    };
+
+    *last_printed_role = Some(message.role.clone());
 
     for line_str in LinesWithEndings::from(&message.content) {
         if line_str.trim().starts_with("```") {
@@ -246,7 +269,7 @@ fn print_message(message: &ChatMessage, syntax_set: &SyntaxSet, theme: &Theme) {
                     code_block_lang = "txt";
                 }
             }
-            println!("{}", line_str.trim_end()); // Print code block markers as-is
+            println!("{}{}", prefix_to_use, line_str.trim_end()); // Print code block markers as-is
             continue;
         }
 
@@ -259,13 +282,13 @@ fn print_message(message: &ChatMessage, syntax_set: &SyntaxSet, theme: &Theme) {
                 Ok(regions) => as_24_bit_terminal_escaped(&regions[..], false),
                 Err(_) => line_str.to_string(), // Fallback to raw line if highlighting fails
             };
-            println!("{}", highlighted_line);
+            println!("{}{}", prefix_to_use, highlighted_line);
         } else {
             // For non-code blocks, apply role prefix and color
             if line_str.trim().is_empty() {
                 println!(); // Preserve empty lines
             } else {
-                println!("{}{}", role_prefix, line_str.trim_end());
+                println!("{}{}", prefix_to_use, line_str.trim_end());
             }
         }
     }
